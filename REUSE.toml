@@ -1,0 +1,13 @@
+version = 1
+
+[[annotations]]
+path = ["**"]
+precedence = "closest"
+SPDX-FileCopyrightText = "2026 Bruno Guilhermo de Barros Valério"
+SPDX-License-Identifier = "AGPL-3.0-only"
+
+[[annotations]]
+path = ["docs/**", "README.md", "AGENTS.md"]
+precedence = "closest"
+SPDX-FileCopyrightText = "2026 Bruno Guilhermo de Barros Valério"
+SPDX-License-Identifier = "CC-BY-4.0"
