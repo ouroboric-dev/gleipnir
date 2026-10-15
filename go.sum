@@ -1,2 +1,4 @@
+github.com/ouroboric-dev/gungnir v0.0.0-20261015072316-d35e622e0126 h1:oUAhltWcmd3f/5RUfFvyEwBBM2zoib4seS9uX98jGuM=
+github.com/ouroboric-dev/gungnir v0.0.0-20261015072316-d35e622e0126/go.mod h1:PvsAmGDtAOx6OrUU3J3/A6XJAZbeVKxo1j8fcrAAipI=
 go.yaml.in/yaml/v3 v3.0.5 h1:N6y/pJk8buWs9NY5ERU2HSMfm+IuD/OtfdAnq6kESPw=
 go.yaml.in/yaml/v3 v3.0.5/go.mod h1:HVTZu1O7/Vkt2N+BFy8Zza+lnLsABggaTM2ZpNIGuKg=
