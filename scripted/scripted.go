@@ -72,6 +72,10 @@ func Load(path string) (*Agent, error) {
 	if err := dec.Decode(&s); err != nil && !errors.Is(err, io.EOF) {
 		return nil, fmt.Errorf("%s: %w", path, err)
 	}
+	var extra any
+	if err := dec.Decode(&extra); !errors.Is(err, io.EOF) {
+		return nil, fmt.Errorf("%s: holds more than one YAML document", path)
+	}
 	for node, steps := range s.Steps {
 		for i, st := range steps {
 			if err := st.check(); err != nil {

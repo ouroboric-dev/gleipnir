@@ -112,6 +112,7 @@ func TestLoadRefusesAmbiguousScripts(t *testing.T) {
 		"a path that climbs": "steps:\n  a:\n    - actions: [ { write: { path: ../x, content: y } } ]\n      result: { status: ok }\n",
 		"an absolute path":   "steps:\n  a:\n    - actions: [ { remove: /etc/passwd } ]\n      result: { status: ok }\n",
 		"write and remove":   "steps:\n  a:\n    - actions: [ { write: { path: x, content: y }, remove: z } ]\n      result: { status: ok }\n",
+		"two YAML documents": "steps:\n  a:\n    - result: { status: ok }\n---\nsteps:\n  b:\n    - result: { status: ok }\n",
 	}
 	for name, s := range cases {
 		p := filepath.Join(t.TempDir(), "script.yaml")
