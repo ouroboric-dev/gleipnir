@@ -3,6 +3,7 @@ package claudecode
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -20,6 +21,7 @@ const okResult = `{"type":"result","subtype":"success","is_error":false,"duratio
 
 type fake struct {
 	stdout string
+	stderr string
 	exit   int
 	err    error
 	got    gungnir.Cmd
@@ -41,6 +43,9 @@ func (f *fake) Run(_ context.Context, c gungnir.Cmd) (gungnir.ExecResult, error)
 		f.stdin = b.String()
 	}
 	c.Stdout.Write([]byte(f.stdout))
+	if c.Stderr != nil {
+		c.Stderr.Write([]byte(f.stderr))
+	}
 	return gungnir.ExecResult{ExitCode: f.exit}, f.err
 }
 
@@ -157,5 +162,103 @@ func TestTheAdapterNeverRunsOnTheHostOrWithAPerTokenKey(t *testing.T) {
 	tk.EnvAllowlist = nil
 	if _, err := noTok.Run(context.Background(), tk); err == nil || !strings.Contains(err.Error(), TokenVar) {
 		t.Errorf("no token: %v", err)
+	}
+}
+
+func resultLine(subtype string, isError bool, status, text string) string {
+	st := "null"
+	if status != "" {
+		st = status
+	}
+	return fmt.Sprintf(`{"type":"result","subtype":%q,"is_error":%v,"api_error_status":%s,"result":%q,"num_turns":1,"total_cost_usd":0,"usage":{"input_tokens":0,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"output_tokens":0}}`,
+		subtype, isError, st, text) + "\n"
+}
+
+func TestARunKeepsTheWholeFinalAnswerAndClipsOnlyTheSummary(t *testing.T) {
+	answer := `{"findings":[` + strings.Repeat(`{"id":"a"},`, 300) + `]}`
+	f := &fake{stdout: initLine + "\n" + resultLine("success", false, "", "  "+answer+"\n")}
+	tk := task(f)
+	tk.TranscriptDir = t.TempDir()
+	r, err := agent().Run(context.Background(), tk)
+	if err != nil || r.Output != answer || len(r.Summary) >= len(answer) || !strings.HasSuffix(r.Summary, "…") {
+		t.Errorf("Run() = %d-byte output, %d-byte summary, %v; want the whole answer and a clipped summary", len(r.Output), len(r.Summary), err)
+	}
+}
+
+func TestAnAnswerOverTheLimitIsAnAgentFailure(t *testing.T) {
+	f := &fake{stdout: initLine + "\n" + resultLine("success", false, "", strings.Repeat("x", gungnir.MaxOutput+1))}
+	tk := task(f)
+	tk.TranscriptDir = t.TempDir()
+	_, err := agent().Run(context.Background(), tk)
+	if err == nil || gungnir.FailureOf(err) != gungnir.FailureAgent {
+		t.Errorf("Run() = %v, want an agent failure", err)
+	}
+}
+
+func TestAFailedSessionSaysHowItFailed(t *testing.T) {
+	cases := map[string]struct {
+		line string
+		want gungnir.FailureKind
+	}{
+		"a rate limit":              {resultLine("success", true, "429", "API Error: Rate limit exceeded"), gungnir.FailureTransient},
+		"an overloaded API":         {resultLine("success", true, "529", "Overloaded"), gungnir.FailureTransient},
+		"a server error":            {resultLine("success", true, "500", "Internal server error"), gungnir.FailureTransient},
+		"a plan's usage limit":      {resultLine("success", true, "429", "Claude usage limit reached. Your limit will reset at 3pm."), gungnir.FailureQuota},
+		"a limit with no status":    {resultLine("success", true, "", "5-hour limit reached ∙ resets 3pm"), gungnir.FailureQuota},
+		"a rejected token":          {resultLine("success", true, "401", "Invalid bearer token"), gungnir.FailureAgent},
+		"the turn limit":            {resultLine("error_max_turns", false, "", ""), gungnir.FailureAgent},
+		"a crash inside the run":    {resultLine("error_during_execution", true, "", "tool failed"), gungnir.FailureAgent},
+		"the turn limit that talks": {resultLine("error_max_turns", true, "429", "usage limit reached in the test I ran"), gungnir.FailureAgent},
+	}
+	for name, c := range cases {
+		f := &fake{stdout: initLine + "\n" + c.line, exit: 1}
+		tk := task(f)
+		tk.TranscriptDir = t.TempDir()
+		r, err := agent().Run(context.Background(), tk)
+		if err != nil || r.Status != gungnir.StatusFailed || r.Failure != c.want {
+			t.Errorf("%s: %+v, %v; want a failed result of kind %q", name, r, err, c.want)
+		}
+	}
+}
+
+func TestASessionThatEndedWithoutAResultSaysHowItFailed(t *testing.T) {
+	cases := map[string]struct {
+		stdout, stderr string
+		exit           int
+		want           gungnir.FailureKind
+	}{
+		"a tool that crashed at start":    {"", "node: command not found", 127, gungnir.FailureTransient},
+		"garbage and a non-zero exit":     {"Segmentation fault\n", "", 139, gungnir.FailureTransient},
+		"a quota said on stderr":          {"", "Claude usage limit reached", 1, gungnir.FailureQuota},
+		"a session that died after start": {initLine + "\n" + assistantLine + "\n", "", 137, gungnir.FailureAgent},
+		"a clean exit with no events":     {"", "", 0, gungnir.FailureAgent},
+		"a result with a number missing":  {initLine + "\n" + `{"type":"result","subtype":"success","is_error":false,"num_turns":1,"total_cost_usd":0.1}` + "\n", "", 0, gungnir.FailureAgent},
+	}
+	for name, c := range cases {
+		f := &fake{stdout: c.stdout, exit: c.exit}
+		f.stderr = c.stderr
+		tk := task(f)
+		tk.TranscriptDir = t.TempDir()
+		_, err := agent().Run(context.Background(), tk)
+		if err == nil || gungnir.FailureOf(err) != c.want {
+			t.Errorf("%s: Run() = %v (kind %q), want an error of kind %q", name, err, gungnir.FailureOf(err), c.want)
+		}
+	}
+}
+
+func TestACommandThatCouldNotRunIsTheSandboxsFailure(t *testing.T) {
+	f := &fake{err: errors.New("podman exec: no such container")}
+	tk := task(f)
+	tk.TranscriptDir = t.TempDir()
+	if _, err := agent().Run(context.Background(), tk); gungnir.FailureOf(err) != gungnir.FailureInfra {
+		t.Errorf("Run() = %v (kind %q), want an infra failure", err, gungnir.FailureOf(err))
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	f = &fake{err: ctx.Err()}
+	tk = task(f)
+	tk.TranscriptDir = t.TempDir()
+	if _, err := agent().Run(ctx, tk); gungnir.FailureOf(err) != gungnir.FailureAgent {
+		t.Errorf("a session the context ended: Run() = %v (kind %q), want an agent failure", err, gungnir.FailureOf(err))
 	}
 }

@@ -19,6 +19,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"github.com/ouroboric-dev/gleipnir/failure"
 	"github.com/ouroboric-dev/gungnir"
 )
 
@@ -101,15 +102,35 @@ func (a *Agent) Run(ctx context.Context, t gungnir.Task) (gungnir.Result, error)
 	res, err := t.Sandbox.Run(ctx, gungnir.Cmd{Argv: Args(t), Env: env, Stdin: strings.NewReader(t.Prompt),
 		Stdout: io.MultiWriter(&out, transcript), Stderr: &errOut})
 	if err != nil {
-		return gungnir.Result{}, fmt.Errorf("claude-code: %w", err)
+		// A session the timeout or the operator ended is the agent's; any other failure to run the
+		// command is the sandbox's (spec §12).
+		kind := gungnir.FailureInfra
+		if ctx.Err() != nil {
+			kind = gungnir.FailureAgent
+		}
+		return gungnir.Result{}, &gungnir.SessionError{Kind: kind, Err: fmt.Errorf("claude-code: %w", err)}
 	}
-	r, err := parse(&out)
+	r, seen, err := parse(&out)
 	if err != nil {
-		return gungnir.Result{}, fmt.Errorf("claude-code: %w (exit %d; stderr: %s)", err, res.ExitCode, tail(errOut.String()))
+		return gungnir.Result{}, &gungnir.SessionError{Kind: unfinished(seen, res.ExitCode, errOut.String()),
+			Err: fmt.Errorf("claude-code: %w (exit %d; stderr: %s)", err, res.ExitCode, tail(errOut.String()))}
 	}
 	r.TranscriptPath = transcriptPath(t)
 	r.Provider = "anthropic"
 	return r, nil
+}
+
+// unfinished says how a session failed that ended without a usable result. A tool that crashed before
+// it printed a single event is the transient failure of spec §12, unless its stderr says the quota is
+// used up; one that got going and then died, or printed numbers we can't read, failed as an agent does.
+func unfinished(seen bool, exit int, stderr string) gungnir.FailureKind {
+	if k := failure.Classify(0, stderr); k == gungnir.FailureQuota {
+		return k
+	}
+	if !seen && exit != 0 {
+		return gungnir.FailureTransient
+	}
+	return gungnir.FailureAgent
 }
 
 func transcriptPath(t gungnir.Task) string {
@@ -160,9 +181,10 @@ type event struct {
 	} `json:"usage"`
 }
 
-// parse reads a session's stream and returns what its result event says. Anything the result event
-// should hold and doesn't is an error: missing usage is never read as zero (spec §4.6).
-func parse(r io.Reader) (gungnir.Result, error) {
+// parse reads a session's stream and returns what its result event says; seen reports whether the
+// stream held any event at all. Anything the result event should hold and doesn't is an error:
+// missing usage is never read as zero (spec §4.6).
+func parse(r io.Reader) (res gungnir.Result, seen bool, err error) {
 	sc := bufio.NewScanner(r)
 	sc.Buffer(make([]byte, 1<<20), 64<<20)
 	var version string
@@ -176,6 +198,7 @@ func parse(r io.Reader) (gungnir.Result, error) {
 		if json.Unmarshal(line, &e) != nil {
 			continue
 		}
+		seen = true
 		switch e.Type {
 		case "system":
 			if e.Subtype == "init" && e.Version != "" {
@@ -187,18 +210,19 @@ func parse(r io.Reader) (gungnir.Result, error) {
 		}
 	}
 	if err := sc.Err(); err != nil {
-		return gungnir.Result{}, err
+		return gungnir.Result{}, seen, err
 	}
 	if final == nil {
-		return gungnir.Result{}, errors.New("the session ended without a result event")
+		return gungnir.Result{}, seen, errors.New("the session ended without a result event")
 	}
 	u := final.Usage
 	if u == nil || u.Input == nil || u.Output == nil || u.CacheRead == nil || u.CacheCreation == nil || final.NumTurns == nil || final.TotalCost == nil || final.IsError == nil {
-		return gungnir.Result{}, errors.New("the result event lacks usage, turns, cost or is_error; refusing to read missing numbers as zero")
+		return gungnir.Result{}, seen, errors.New("the result event lacks usage, turns, cost or is_error; refusing to read missing numbers as zero")
 	}
 	r2 := gungnir.Result{
 		Status:     gungnir.StatusOK,
 		Summary:    clip(final.Result),
+		Output:     strings.TrimSpace(final.Result),
 		CLIVersion: version,
 		Usage: gungnir.Usage{
 			InTok: *u.Input + *u.CacheCreation, OutTok: *u.Output, CacheTok: *u.CacheRead,
@@ -206,15 +230,22 @@ func parse(r io.Reader) (gungnir.Result, error) {
 		},
 	}
 	if *final.IsError || final.Subtype != "success" {
-		r2.Status = gungnir.StatusFailed
+		r2.Status, r2.Failure = gungnir.StatusFailed, gungnir.FailureAgent
 		if r2.Summary == "" {
 			r2.Summary = final.Subtype
 		}
+		status := 0
 		if s := strings.Trim(string(final.APIErrStatus), "\" "); s != "" && s != "null" {
 			r2.Summary += " (API status " + s + ")"
+			status, _ = strconv.Atoi(s)
+		}
+		// A turn limit or a crash inside the session is the agent's; only what the API said can be
+		// transient or a used-up quota.
+		if final.Subtype == "success" {
+			r2.Failure = failure.Classify(status, final.Result)
 		}
 	}
-	return r2, r2.Validate()
+	return r2, seen, r2.Validate()
 }
 
 func clip(s string) string {
