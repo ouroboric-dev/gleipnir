@@ -173,3 +173,11 @@ func TestScriptedRefusesAnActionThatSetsTwoThings(t *testing.T) {
 		t.Error("Load() = nil, want an error")
 	}
 }
+
+func TestScriptedReportsAProviderAndAToolVersionWhenTheScriptGivesThem(t *testing.T) {
+	a := load(t, "steps:\n  design:\n    - result: { status: ok, summary: x, provider: anthropic, cli_version: 2.1.284 }\n")
+	r, err := a.Run(context.Background(), gungnir.Task{Node: "design", Attempt: 1, Workdir: t.TempDir()})
+	if err != nil || r.Provider != "anthropic" || r.CLIVersion != "2.1.284" {
+		t.Errorf("Run() = %+v, %v", r, err)
+	}
+}

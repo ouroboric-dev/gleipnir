@@ -52,9 +52,11 @@ type Write struct {
 
 // Outcome is the result a step reports.
 type Outcome struct {
-	Status  gungnir.Status `yaml:"status"`
-	Summary string         `yaml:"summary"`
-	Usage   struct {
+	Status     gungnir.Status `yaml:"status"`
+	Summary    string         `yaml:"summary"`
+	Provider   string         `yaml:"provider"`    // who served the model, as a real adapter reports it
+	CLIVersion string         `yaml:"cli_version"` // the agent tool's version, as a real adapter reports it
+	Usage      struct {
 		In            int64   `yaml:"in"`
 		Out           int64   `yaml:"out"`
 		Cache         int64   `yaml:"cache"`
@@ -166,8 +168,10 @@ func (a *Agent) Run(ctx context.Context, t gungnir.Task) (gungnir.Result, error)
 	}
 	o := st.Result
 	return gungnir.Result{
-		Status:  o.Status,
-		Summary: o.Summary,
+		Status:     o.Status,
+		Summary:    o.Summary,
+		Provider:   o.Provider,
+		CLIVersion: o.CLIVersion,
 		Usage: gungnir.Usage{InTok: o.Usage.In, OutTok: o.Usage.Out, CacheTok: o.Usage.Cache,
 			Turns: o.Usage.Turns, CostUSD: o.Usage.CostUSD, CostEstimated: o.Usage.CostEstimated},
 		TranscriptPath: transcript,
