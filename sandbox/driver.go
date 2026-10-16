@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/ouroboric-dev/gungnir"
@@ -24,6 +25,7 @@ type Driver struct {
 	Devcontainer string        // the devcontainer CLI; "devcontainer" by default
 	Compose      string        // the compose provider; "podman-compose" by default
 	ReadyTimeout time.Duration // how long Up waits for the firewall; a minute by default
+	UpTimeout    time.Duration // how long devcontainer up may take; five minutes by default (a first start hung for eight in the spike)
 
 	cfg    Config
 	engine string
@@ -52,7 +54,7 @@ func New(socket string, cfg Config, work string) (*Driver, error) {
 	if err := os.WriteFile(filepath.Join(auth, "auth.json"), []byte("{}\n"), 0o600); err != nil {
 		return nil, err
 	}
-	return &Driver{Podman: "podman", Devcontainer: "devcontainer", Compose: "podman-compose", ReadyTimeout: time.Minute,
+	return &Driver{Podman: "podman", Devcontainer: "devcontainer", Compose: "podman-compose", ReadyTimeout: time.Minute, UpTimeout: 5 * time.Minute,
 		cfg: cfg, engine: socket, work: work, auth: auth}, nil
 }
 
@@ -74,6 +76,11 @@ func (d *Driver) Env() []string {
 func (d *Driver) run(ctx context.Context, name string, args ...string) ([]byte, error) {
 	cmd := exec.CommandContext(ctx, name, args...)
 	cmd.Env = d.Env()
+	// The tools start children of their own (devcontainer runs podman-compose): a timeout kills the
+	// whole group, and a child that outlives its parent can't hold the pipes open for long.
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.Cancel = func() error { return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) }
+	cmd.WaitDelay = 5 * time.Second
 	var out, errOut bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &out, &errOut
 	if err := cmd.Run(); err != nil {
@@ -106,7 +113,9 @@ func (d *Driver) Up(ctx context.Context, spec gungnir.SandboxSpec) (gungnir.Env,
 	}
 	project := Project(spec)
 	env := gungnir.Env{Name: spec.Name, Project: project, Workdir: Root + "/" + spec.Layout().Leaf}
-	out, err := d.run(ctx, d.Devcontainer, "up", "--docker-path", d.Podman, "--docker-compose-path", d.Compose,
+	upCtx, cancel := context.WithTimeout(ctx, d.UpTimeout)
+	defer cancel()
+	out, err := d.run(upCtx, d.Devcontainer, "up", "--docker-path", d.Podman, "--docker-compose-path", d.Compose,
 		"--workspace-folder", spec.Leaf, "--config", g.Devcontainer, "--user-data-folder", filepath.Join(g.Dir, "data"),
 		"--skip-post-create", "--default-user-env-probe", "none", "--mount-workspace-git-root=false", "--log-format", "json")
 	if err != nil {

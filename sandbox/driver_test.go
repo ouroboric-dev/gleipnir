@@ -269,3 +269,19 @@ func TestInfoReadsRootlessAndTheVersions(t *testing.T) {
 		t.Errorf("DevcontainerCLI() = %q, %v", v, err)
 	}
 }
+
+func TestUpGivesUpOnADevcontainerThatHangs(t *testing.T) {
+	d, log, sp := fakeEngine(t)
+	hang := filepath.Join(t.TempDir(), "devcontainer")
+	// Like the real CLI, it starts a child that outlives it, holding the output open.
+	os.WriteFile(hang, []byte("#!/bin/sh\necho \"devcontainer $*\" >> \"$STUB_LOG\"\n(sleep 30; true) &\nsleep 30\n"), 0o755)
+	d.Devcontainer, d.UpTimeout = hang, 300*time.Millisecond
+	began := time.Now()
+	_, err := d.Up(context.Background(), sp)
+	if err == nil || time.Since(began) > 10*time.Second {
+		t.Errorf("Up() = %v after %v; want a timeout, promptly", err, time.Since(began))
+	}
+	if !strings.Contains(logOf(t, log), "podman rm -f -t 2") {
+		t.Error("a start that timed out was not cleaned up")
+	}
+}
