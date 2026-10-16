@@ -226,10 +226,19 @@ func (d *Driver) Exec(ctx context.Context, env gungnir.Env, c gungnir.Cmd) (gung
 	}
 	var ee *exec.ExitError
 	if errors.As(err, &ee) {
+		if ee.ExitCode() == podmanFailed {
+			return gungnir.ExecResult{}, fmt.Errorf("podman couldn't run %s in the sandbox (exit %d): the container may be gone", c.Argv[0], podmanFailed)
+		}
 		return gungnir.ExecResult{ExitCode: ee.ExitCode()}, nil
 	}
 	return gungnir.ExecResult{}, err
 }
+
+// podmanFailed is the exit status podman exec returns when podman itself failed, such as for a
+// container that is gone. It is not the command's: an infrastructure failure must not read as a check
+// or a node that failed (spec §12; backlog B-016, B-017). A command that exits 125 on its own reads the
+// same way, which is a cost worth paying.
+const podmanFailed = 125
 
 func sortedEnv(m map[string]string) []string {
 	ks := make([]string, 0, len(m))

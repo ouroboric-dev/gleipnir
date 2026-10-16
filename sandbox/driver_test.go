@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -356,5 +357,42 @@ func TestUpGivesUpOnADevcontainerThatHangs(t *testing.T) {
 	}
 	if !strings.Contains(logOf(t, log), "podman rm -f -t 2") {
 		t.Error("a start that timed out was not cleaned up")
+	}
+}
+
+// Backlog B-017: podman's own failure is an error, never the command's exit code.
+func TestExecReportsAMissingContainerAsAnError(t *testing.T) {
+	d, _, sp := fakeEngine(t)
+	env, err := d.Up(context.Background(), sp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("STUB_EXEC_EXIT", "125")
+	res, err := d.Exec(context.Background(), env, gungnir.Cmd{Argv: []string{"go", "test"}})
+	if err == nil || !strings.Contains(err.Error(), "podman couldn't run go") || res.ExitCode != 0 {
+		t.Errorf("Exec() = %+v, %v; want an error and no exit code", res, err)
+	}
+	for _, code := range []string{"1", "2", "126", "127", "137"} {
+		t.Setenv("STUB_EXEC_EXIT", code)
+		if res, err := d.Exec(context.Background(), env, gungnir.Cmd{Argv: []string{"go", "test"}}); err != nil || strconv.Itoa(res.ExitCode) != code {
+			t.Errorf("exit %s: Exec() = %+v, %v; the command's own exit codes stay results", code, res, err)
+		}
+	}
+}
+
+// Backlog B-016: a probe podman or timeout could not run does not show the network closed.
+func TestUpRefusesAProbeThatCouldNotRun(t *testing.T) {
+	d, log, sp := fakeEngine(t)
+	t.Setenv("STUB_PROBE_EXIT", "125")
+	_, err := d.Up(context.Background(), sp)
+	if err == nil || !strings.Contains(err.Error(), "couldn't run") {
+		t.Fatalf("Up() = %v, want a refusal: the closed-network check could not run", err)
+	}
+	if !strings.Contains(logOf(t, log), "podman rm -f -t 2 --depend work123 fw456") {
+		t.Error("a sandbox that failed its check was left running")
+	}
+	t.Setenv("STUB_PROBE_EXIT", "124") // timeout's own status for a connect that was dropped: closed
+	if _, err := d.Up(context.Background(), sp); err != nil {
+		t.Errorf("a connect that timed out must show the network closed: %v", err)
 	}
 }
