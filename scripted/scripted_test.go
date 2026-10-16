@@ -2,6 +2,7 @@ package scripted
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -296,5 +297,22 @@ func TestScriptedRefusesAScriptThatNamesNoSuchFailure(t *testing.T) {
 		if _, err := Load(p); err == nil {
 			t.Errorf("%s: Load() = nil, want an error", name)
 		}
+	}
+}
+
+func TestTheTranscriptRecordsWhatTheSessionWasGiven(t *testing.T) {
+	a := load(t, "steps:\n  build:\n    - result: { status: ok }\n")
+	dir := t.TempDir()
+	r, err := a.Run(context.Background(), gungnir.Task{Node: "build", Attempt: 1, Workdir: t.TempDir(), TranscriptDir: dir, Prompt: "Build it.", MaxTurns: 7})
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, _ := os.ReadFile(r.TranscriptPath)
+	var got struct {
+		Prompt   string `json:"prompt"`
+		MaxTurns int    `json:"max_turns"`
+	}
+	if err := json.Unmarshal(b, &got); err != nil || got.Prompt != "Build it." || got.MaxTurns != 7 {
+		t.Errorf("the transcript = %s, %v", b, err)
 	}
 }

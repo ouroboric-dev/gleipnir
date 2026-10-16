@@ -286,7 +286,7 @@ func writeTranscript(t gungnir.Task) (string, error) {
 		return "", err
 	}
 	data, err := json.MarshalIndent(map[string]any{
-		"role": t.Role, "node": t.Node, "attempt": t.Attempt, "model": t.Model, "prompt": t.Prompt,
+		"role": t.Role, "node": t.Node, "attempt": t.Attempt, "model": t.Model, "prompt": t.Prompt, "max_turns": t.MaxTurns,
 	}, "", "  ")
 	if err != nil {
 		return "", err
