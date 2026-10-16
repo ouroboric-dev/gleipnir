@@ -13,7 +13,7 @@ import (
 
 // quota matches the words providers use when a quota, a credit balance or a plan's usage limit is
 // used up. A plain rate limit is not here: it clears in seconds, and is transient.
-var quota = regexp.MustCompile(`(?i)usage limit|limit reached|reached (?:your|the) (?:\w+ )?limit|hit your limit|quota|insufficient (?:credits|funds)|out of credits|credit balance|billing|payment required`)
+var quota = regexp.MustCompile(`(?i)usage limit|(?:key|credit|spend|monthly|daily|weekly) limit|limit reached|reached (?:your|the) (?:\w+ )?limit|hit your limit|quota|insufficient (?:credits|funds)|out of credits|credit balance|billing|payment required`)
 
 // transient matches the words of a network or capacity failure that reports no status.
 var transient = regexp.MustCompile(`(?i)overloaded|rate.?limit|too many requests|temporarily unavailable|ECONNRESET|ECONNREFUSED|ETIMEDOUT|EAI_AGAIN|socket hang up|fetch failed|connection (?:reset|refused|closed)|service unavailable|bad gateway|gateway time-?out`)

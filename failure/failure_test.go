@@ -28,6 +28,7 @@ func TestClassify(t *testing.T) {
 		{"credits used up, reported as a 429", 429, "You have insufficient credits for this request", quota},
 		{"a plan's usage limit", 0, "Claude usage limit reached. Your limit will reset at 3pm", quota},
 		{"a plan's usage limit, reported as a 429", 429, "5-hour limit reached, resets 3pm", quota},
+		{"a key over its credit limit", 403, "Key limit exceeded (monthly limit)", quota},
 		{"a quota", 429, "You exceeded your current quota", quota},
 		{"a bad request", 400, "invalid request", agent},
 		{"an unauthorised key", 401, "invalid api key", agent},
