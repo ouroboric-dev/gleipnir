@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"strings"
@@ -14,6 +15,8 @@ import (
 
 type fake struct {
 	stdout map[string]string // by the program's first argument: run or --version
+	stderr string
+	err    error // what the run command returns, beside its output
 	exit   int
 	calls  []gungnir.Cmd
 	prompt string
@@ -30,7 +33,10 @@ func (f *fake) Run(_ context.Context, c gungnir.Cmd) (gungnir.ExecResult, error)
 		f.prompt = string(b)
 	}
 	c.Stdout.Write([]byte(f.stdout["run"]))
-	return gungnir.ExecResult{ExitCode: f.exit}, nil
+	if c.Stderr != nil {
+		c.Stderr.Write([]byte(f.stderr))
+	}
+	return gungnir.ExecResult{ExitCode: f.exit}, f.err
 }
 
 func fixture(t *testing.T, name string) string {
@@ -204,5 +210,134 @@ func TestRefusals(t *testing.T) {
 	tk.Model = "openrouter/other/model"
 	if _, err := newAgent(t, "standard", nil).Run(context.Background(), tk); err == nil {
 		t.Error("a task for another model ran")
+	}
+}
+
+func apiError(status int, message string) string {
+	return fmt.Sprintf(`{"type":"error","error":{"name":"APIError","data":{"message":%q,"statusCode":%d}}}`, message, status) + "\n"
+}
+
+func TestAnAPIErrorSaysHowItFailed(t *testing.T) {
+	cases := map[string]struct {
+		status  int
+		message string
+		want    gungnir.FailureKind
+	}{
+		"a rate limit":         {429, "Rate limit exceeded: free-models-per-min", gungnir.FailureTransient},
+		"a server error":       {502, "Bad gateway", gungnir.FailureTransient},
+		"credits used up":      {402, "Insufficient credits. Add more using https://openrouter.ai/credits", gungnir.FailureQuota},
+		"a key over its limit": {403, "Key limit exceeded (monthly limit)", gungnir.FailureQuota},
+		"a quota in the words": {429, "You exceeded your current quota", gungnir.FailureQuota},
+		"a rejected key":       {401, "No auth credentials found", gungnir.FailureAgent},
+		"a bad request":        {400, "invalid model", gungnir.FailureAgent},
+	}
+	for name, c := range cases {
+		f := &fake{stdout: map[string]string{"run": apiError(c.status, c.message)}, exit: 1}
+		r, err := newAgent(t, "standard", nil).Run(context.Background(), task(f, t))
+		if err != nil || r.Status != gungnir.StatusFailed || r.Failure != c.want {
+			t.Errorf("%s: %+v, %v; want a failed result of kind %q", name, r, err, c.want)
+		}
+	}
+}
+
+func TestTheFinalAnswerIsTheTextOfTheLastStepThatSaidAnything(t *testing.T) {
+	step := func(text string, cost string) string {
+		out := `{"type":"step_start","part":{"type":"step-start"}}` + "\n"
+		for _, part := range text {
+			out += fmt.Sprintf(`{"type":"text","part":{"type":"text","text":%q}}`, string(part)) + "\n"
+		}
+		return out + `{"type":"step_finish","part":{"type":"step-finish","reason":"stop","tokens":{"input":1,"output":1,"reasoning":0,"cache":{"write":0,"read":0}},"cost":` + cost + `}}` + "\n"
+	}
+	// The second step's text comes in two parts; the third step, a tool call, says nothing.
+	two := `{"type":"step_start","part":{"type":"step-start"}}` + "\n" +
+		`{"type":"text","part":{"type":"text","text":"{\"findings\":"}}` + "\n" +
+		`{"type":"text","part":{"type":"text","text":"[]}\n"}}` + "\n" +
+		`{"type":"step_finish","part":{"type":"step-finish","tokens":{"input":1,"output":1,"reasoning":0,"cache":{"write":0,"read":0}},"cost":0.001}}` + "\n"
+	f := &fake{stdout: map[string]string{"run": step("x", "0.001") + two + step("", "0.001")}}
+	r, err := newAgent(t, "standard", nil).Run(context.Background(), task(f, t))
+	if err != nil || r.Output != `{"findings":[]}` || r.Usage.Turns != 3 {
+		t.Errorf("Run() = %+v, %v; want the output {\"findings\":[]}", r, err)
+	}
+}
+
+// Backlog B-019: a session that failed after it spent tokens, with no dollar figure, is refused like
+// one that succeeded, and the tokens it spent still count.
+func TestAFailedSessionWithTokensAndNoCostIsRefused(t *testing.T) {
+	stream := strings.Replace(fixture(t, "success.jsonl"), `"cost":0.00001005`, `"cost":0`, 1) + apiError(500, "upstream died")
+	f := &fake{stdout: map[string]string{"run": stream}, exit: 1}
+	_, err := newAgent(t, "standard", nil).Run(context.Background(), task(f, t))
+	var se *gungnir.SessionError
+	if !errors.As(err, &se) || !strings.Contains(err.Error(), "price") {
+		t.Fatalf("Run() = %v, want a refusal that names the price", err)
+	}
+	if se.Usage.InTok != 7 || se.Usage.OutTok != 5 || se.Usage.CacheTok != 80 || se.Usage.Turns != 1 {
+		t.Errorf("the refusal's usage = %+v; the tokens must still be counted", se.Usage)
+	}
+}
+
+func TestASessionThatEndedWithoutAnyStepSaysHowItFailed(t *testing.T) {
+	cases := map[string]struct {
+		stdout, stderr string
+		exit           int
+		want           gungnir.FailureKind
+	}{
+		"a tool that crashed at start": {"", "bun: command not found", 127, gungnir.FailureTransient},
+		"garbage and a bad exit":       {"panic: boom\n", "", 2, gungnir.FailureTransient},
+		"a quota said on stderr":       {"", "insufficient credits", 1, gungnir.FailureQuota},
+		"a clean exit and no events":   {"", "", 0, gungnir.FailureAgent},
+		"a step with a number missing": {strings.Replace(fixture(t, "success.jsonl"), `"cache":{"write":0,"read":80}`, `"cache":{}`, 1), "", 0, gungnir.FailureAgent},
+	}
+	for name, c := range cases {
+		f := &fake{stdout: map[string]string{"run": c.stdout}, stderr: c.stderr, exit: c.exit}
+		_, err := newAgent(t, "standard", nil).Run(context.Background(), task(f, t))
+		if err == nil || gungnir.FailureOf(err) != c.want {
+			t.Errorf("%s: Run() = %v (kind %q), want an error of kind %q", name, err, gungnir.FailureOf(err), c.want)
+		}
+	}
+}
+
+func TestACommandThatCouldNotRunIsTheSandboxsFailure(t *testing.T) {
+	f := &fake{err: errors.New("podman exec: no such container")}
+	if _, err := newAgent(t, "standard", nil).Run(context.Background(), task(f, t)); gungnir.FailureOf(err) != gungnir.FailureInfra {
+		t.Errorf("Run() = %v (kind %q), want an infra failure", err, gungnir.FailureOf(err))
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	f = &fake{err: ctx.Err()}
+	if _, err := newAgent(t, "standard", nil).Run(ctx, task(f, t)); gungnir.FailureOf(err) != gungnir.FailureAgent {
+		t.Errorf("a session the context ended: Run() = %v (kind %q), want an agent failure", err, gungnir.FailureOf(err))
+	}
+}
+
+// Backlog B-020: a session the timeout killed still spent the steps that finished.
+func TestATimedOutSessionStillCountsItsUsage(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	cut := fixture(t, "success.jsonl") + `{"type":"step_start","part":{"type":"step-start"}}` + "\n" + `{"type":"text","part":{"type":"text","text":"half a th`
+	f := &fake{stdout: map[string]string{"run": cut}, err: ctx.Err()}
+	_, err := newAgent(t, "standard", nil).Run(ctx, task(f, t))
+	var se *gungnir.SessionError
+	if !errors.As(err, &se) || se.Kind != gungnir.FailureAgent {
+		t.Fatalf("Run() = %v, want an agent failure", err)
+	}
+	want := gungnir.Usage{InTok: 7, OutTok: 5, CacheTok: 80, Turns: 1, CostUSD: 0.00001005, CostEstimated: true}
+	if se.Usage != want {
+		t.Errorf("usage = %+v, want %+v", se.Usage, want)
+	}
+}
+
+// Backlog B-021: a chatty session is stopped by the bound, and the host never holds it all.
+func TestSessionOutputIsBounded(t *testing.T) {
+	old := maxStream
+	maxStream = 300
+	defer func() { maxStream = old }()
+	f := &fake{stdout: map[string]string{"run": fixture(t, "success.jsonl") + strings.Repeat("noise\n", 200)}}
+	tk := task(f, t)
+	_, err := newAgent(t, "standard", nil).Run(context.Background(), tk)
+	if err == nil || gungnir.FailureOf(err) != gungnir.FailureAgent || !strings.Contains(err.Error(), "more than") {
+		t.Fatalf("Run() = %v; want an agent failure that says the output was too long", err)
+	}
+	if fi, err := os.Stat(tk.TranscriptDir + "/review-1.jsonl"); err != nil || fi.Size() > 300 {
+		t.Errorf("the transcript = %v, %v; want at most 300 bytes", fi, err)
 	}
 }

@@ -26,6 +26,7 @@ type Driver struct {
 	Compose      string        // the compose provider; "podman-compose" by default
 	ReadyTimeout time.Duration // how long Up waits for the firewall; a minute by default
 	UpTimeout    time.Duration // how long devcontainer up may take; five minutes by default (a first start hung for eight in the spike)
+	DownTimeout  time.Duration // how long Down may take; two minutes by default
 
 	cfg    Config
 	engine string
@@ -54,7 +55,7 @@ func New(socket string, cfg Config, work string) (*Driver, error) {
 	if err := os.WriteFile(filepath.Join(auth, "auth.json"), []byte("{}\n"), 0o600); err != nil {
 		return nil, err
 	}
-	return &Driver{Podman: "podman", Devcontainer: "devcontainer", Compose: "podman-compose", ReadyTimeout: time.Minute, UpTimeout: 5 * time.Minute,
+	return &Driver{Podman: "podman", Devcontainer: "devcontainer", Compose: "podman-compose", ReadyTimeout: time.Minute, UpTimeout: 5 * time.Minute, DownTimeout: 2 * time.Minute,
 		cfg: cfg, engine: socket, work: work, auth: auth}, nil
 }
 
@@ -226,10 +227,19 @@ func (d *Driver) Exec(ctx context.Context, env gungnir.Env, c gungnir.Cmd) (gung
 	}
 	var ee *exec.ExitError
 	if errors.As(err, &ee) {
+		if ee.ExitCode() == podmanFailed {
+			return gungnir.ExecResult{}, fmt.Errorf("podman couldn't run %s in the sandbox (exit %d): the container may be gone", c.Argv[0], podmanFailed)
+		}
 		return gungnir.ExecResult{ExitCode: ee.ExitCode()}, nil
 	}
 	return gungnir.ExecResult{}, err
 }
+
+// podmanFailed is the exit status podman exec returns when podman itself failed, such as for a
+// container that is gone. It is not the command's: an infrastructure failure must not read as a check
+// or a node that failed (spec §12; backlog B-016, B-017). A command that exits 125 on its own reads the
+// same way, which is a cost worth paying.
+const podmanFailed = 125
 
 func sortedEnv(m map[string]string) []string {
 	ks := make([]string, 0, len(m))
@@ -292,6 +302,13 @@ exit 1`
 func (d *Driver) Down(ctx context.Context, env gungnir.Env) error {
 	if env.Project == "" {
 		return errors.New("no sandbox project to stop")
+	}
+	// Down runs when a run ends, with its own context: an engine that hangs must not hang ygg with it
+	// (backlog B-028). What it couldn't remove stays recorded in run.json, and ygg doctor finds it.
+	if d.DownTimeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, d.DownTimeout)
+		defer cancel()
 	}
 	ids, err := d.run(ctx, d.Podman, "ps", "-a", "-q", "--filter", "label=com.docker.compose.project="+env.Project)
 	if err != nil {

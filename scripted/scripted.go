@@ -23,10 +23,28 @@ type Script struct {
 
 // Step is one attempt. Exactly one of Result, Hang and Error is set.
 type Step struct {
-	Actions []Action `yaml:"actions"` // applied in order, inside the workdir, before the result
+	Actions []Action `yaml:"actions"` // applied in order, inside the workdir, before the result, the hang or the error
 	Result  *Outcome `yaml:"result"`
 	Hang    bool     `yaml:"hang"`  // block until the context ends: a session the factory must stop
-	Error   string   `yaml:"error"` // Run returns this error: an agent failure
+	Error   string   `yaml:"error"` // Run returns this error
+	// Kind is how an error step fails: agent (the default), transient, quota or infra (spec §12).
+	Kind gungnir.FailureKind `yaml:"kind"`
+	// Usage is what an error or hang step spent before it ended; a result step has its own.
+	Usage *Usage `yaml:"usage"`
+}
+
+// Usage is what a session consumed.
+type Usage struct {
+	In            int64   `yaml:"in"`
+	Out           int64   `yaml:"out"`
+	Cache         int64   `yaml:"cache"`
+	Turns         int64   `yaml:"turns"`
+	CostUSD       float64 `yaml:"cost_usd"`
+	CostEstimated bool    `yaml:"cost_estimated"`
+}
+
+func (u Usage) toGungnir() gungnir.Usage {
+	return gungnir.Usage{InTok: u.In, OutTok: u.Out, CacheTok: u.Cache, Turns: u.Turns, CostUSD: u.CostUSD, CostEstimated: u.CostEstimated}
 }
 
 // Action changes one file in the workdir, or runs one command in the task's sandbox. Exactly one
@@ -56,14 +74,13 @@ type Outcome struct {
 	Summary    string         `yaml:"summary"`
 	Provider   string         `yaml:"provider"`    // who served the model, as a real adapter reports it
 	CLIVersion string         `yaml:"cli_version"` // the agent tool's version, as a real adapter reports it
-	Usage      struct {
-		In            int64   `yaml:"in"`
-		Out           int64   `yaml:"out"`
-		Cache         int64   `yaml:"cache"`
-		Turns         int64   `yaml:"turns"`
-		CostUSD       float64 `yaml:"cost_usd"`
-		CostEstimated bool    `yaml:"cost_estimated"`
-	} `yaml:"usage"`
+	Usage      Usage          `yaml:"usage"`
+	// Failure is how a failed result failed: agent (the default), transient or quota.
+	Failure gungnir.FailureKind `yaml:"failure"`
+	// Output is the session's final answer, as written. Report is the same answer as a reviewer
+	// writes it: a findings document built from these findings. A step sets at most one of them.
+	Output string            `yaml:"output"`
+	Report []gungnir.Finding `yaml:"report"`
 }
 
 // Agent replays a Script.
@@ -110,6 +127,30 @@ func (st Step) check() error {
 	if st.Result != nil && st.Result.Status != gungnir.StatusOK && st.Result.Status != gungnir.StatusFailed {
 		return fmt.Errorf("result status %q is neither ok nor failed", st.Result.Status)
 	}
+	if o := st.Result; o != nil {
+		if o.Output != "" && o.Report != nil {
+			return errors.New("a result sets at most one of output and report")
+		}
+		if o.Failure != "" && o.Status != gungnir.StatusFailed {
+			return errors.New("a result with a failure kind has status failed")
+		}
+		switch o.Failure {
+		case "", gungnir.FailureAgent, gungnir.FailureTransient, gungnir.FailureQuota:
+		default:
+			return fmt.Errorf("result failure %q is not agent, transient or quota", o.Failure)
+		}
+	}
+	switch st.Kind {
+	case "", gungnir.FailureAgent, gungnir.FailureTransient, gungnir.FailureQuota, gungnir.FailureInfra:
+	default:
+		return fmt.Errorf("kind %q is not agent, transient, quota or infra", st.Kind)
+	}
+	if (st.Kind != "" || st.Usage != nil) && st.Result != nil {
+		return errors.New("kind and usage belong to an error or hang step; a result has its own")
+	}
+	if st.Kind != "" && st.Error == "" {
+		return errors.New("kind belongs to an error step")
+	}
 	for _, a := range st.Actions {
 		set := 0
 		for _, b := range []bool{a.Write != nil, a.Remove != "", a.Run != nil} {
@@ -143,13 +184,6 @@ func (a *Agent) Run(ctx context.Context, t gungnir.Task) (gungnir.Result, error)
 	if err != nil {
 		return gungnir.Result{}, err
 	}
-	if st.Hang {
-		<-ctx.Done()
-		return gungnir.Result{}, ctx.Err()
-	}
-	if st.Error != "" {
-		return gungnir.Result{}, errors.New(st.Error)
-	}
 	root, err := os.OpenRoot(t.Workdir)
 	if err != nil {
 		return gungnir.Result{}, err
@@ -166,16 +200,45 @@ func (a *Agent) Run(ctx context.Context, t gungnir.Task) (gungnir.Result, error)
 			return gungnir.Result{}, fmt.Errorf("scripted: %w", err)
 		}
 	}
+	var spent gungnir.Usage
+	if st.Usage != nil {
+		spent = st.Usage.toGungnir()
+	}
+	switch {
+	case st.Hang:
+		<-ctx.Done()
+		return gungnir.Result{}, a.fail(ctx.Err(), "", spent)
+	case st.Error != "":
+		return gungnir.Result{}, a.fail(errors.New(st.Error), st.Kind, spent)
+	}
 	o := st.Result
+	output := o.Output
+	if o.Report != nil {
+		b, err := json.Marshal(gungnir.Report{Findings: o.Report})
+		if err != nil {
+			return gungnir.Result{}, err
+		}
+		output = string(b)
+	}
 	return gungnir.Result{
-		Status:     o.Status,
-		Summary:    o.Summary,
-		Provider:   o.Provider,
-		CLIVersion: o.CLIVersion,
-		Usage: gungnir.Usage{InTok: o.Usage.In, OutTok: o.Usage.Out, CacheTok: o.Usage.Cache,
-			Turns: o.Usage.Turns, CostUSD: o.Usage.CostUSD, CostEstimated: o.Usage.CostEstimated},
+		Status:         o.Status,
+		Summary:        o.Summary,
+		Provider:       o.Provider,
+		CLIVersion:     o.CLIVersion,
+		Usage:          o.Usage.toGungnir(),
+		Failure:        o.Failure,
+		Output:         output,
 		TranscriptPath: transcript,
 	}, nil
+}
+
+// fail is an error step's error. One with no kind and no usage stays a plain error, which is an agent
+// failure; otherwise it is a *gungnir.SessionError, as a real adapter's is.
+func (a *Agent) fail(err error, kind gungnir.FailureKind, spent gungnir.Usage) error {
+	if kind == "" && spent == (gungnir.Usage{}) {
+		return err
+	}
+	return &gungnir.SessionError{Kind: kind, Err: err, Usage: spent}
 }
 
 // runInSandbox runs one command through the task's sandbox, and keeps its output beside the
@@ -223,7 +286,7 @@ func writeTranscript(t gungnir.Task) (string, error) {
 		return "", err
 	}
 	data, err := json.MarshalIndent(map[string]any{
-		"role": t.Role, "node": t.Node, "attempt": t.Attempt, "model": t.Model, "prompt": t.Prompt,
+		"role": t.Role, "node": t.Node, "attempt": t.Attempt, "model": t.Model, "prompt": t.Prompt, "max_turns": t.MaxTurns, "read_only": t.ReadOnly,
 	}, "", "  ")
 	if err != nil {
 		return "", err

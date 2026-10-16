@@ -18,12 +18,19 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"github.com/ouroboric-dev/gleipnir/bounded"
+	"github.com/ouroboric-dev/gleipnir/failure"
 	"github.com/ouroboric-dev/gungnir"
 )
 
 // KeyVar is the one credential the adapter passes: a dedicated OpenRouter key with a hard credit
 // limit (spec §6.3).
 const KeyVar = "OPENROUTER_API_KEY"
+
+// maxStream is the most bytes of a session's output the adapter keeps in memory, and the most it
+// writes to the transcript. A chatty session is an agent failure, not a host that runs out of memory
+// (backlog B-021). A variable so a test can lower it.
+var maxStream = 32 << 20
 
 // Hosts are what the sandbox's firewall must open for a session.
 var Hosts = []string{"openrouter.ai"}
@@ -152,15 +159,35 @@ func (a *Agent) Run(ctx context.Context, t gungnir.Task) (gungnir.Result, error)
 	}
 	defer closeT()
 	version := a.version(ctx, t, env)
-	var out, errOut bytes.Buffer
+	out, errOut := bounded.NewBuffer(maxStream), bounded.NewBuffer(maxStream)
+	tw := bounded.NewWriter(transcript, int64(maxStream))
 	res, err := t.Sandbox.Run(ctx, gungnir.Cmd{Argv: Args(t, a.model), Env: env, Stdin: strings.NewReader(t.Prompt),
-		Stdout: io.MultiWriter(&out, transcript), Stderr: &errOut})
+		Stdout: io.MultiWriter(out, tw), Stderr: errOut})
+	// The steps that finished before the session ended were spent, whatever way it ended (backlog B-020).
+	_, spent, _, _ := a.parse(bytes.NewReader(out.Bytes()), 0)
 	if err != nil {
-		return gungnir.Result{}, fmt.Errorf("opencode: %w", err)
+		// A session the timeout or the operator ended is the agent's; any other failure to run the
+		// command is the sandbox's (spec §12).
+		kind := gungnir.FailureInfra
+		if ctx.Err() != nil {
+			kind = gungnir.FailureAgent
+		}
+		return gungnir.Result{}, &gungnir.SessionError{Kind: kind, Err: fmt.Errorf("opencode: %w", err), Usage: spent}
 	}
-	r, err := a.parse(&out, res.ExitCode)
+	if out.Truncated() || tw.Truncated() {
+		return gungnir.Result{}, &gungnir.SessionError{Kind: gungnir.FailureAgent, Usage: spent,
+			Err: fmt.Errorf("opencode: the session wrote more than %d MiB of output", maxStream>>20)}
+	}
+	r, used, seen, err := a.parse(bytes.NewReader(out.Bytes()), res.ExitCode)
 	if err != nil {
-		return gungnir.Result{}, fmt.Errorf("opencode: %w (exit %d; stderr: %s)", err, res.ExitCode, tail(errOut.String()))
+		kind := gungnir.FailureAgent
+		if k := failure.Classify(0, string(errOut.Bytes())); k == gungnir.FailureQuota {
+			kind = k
+		} else if !seen && res.ExitCode != 0 {
+			kind = gungnir.FailureTransient // the tool crashed before it printed an event (spec §12)
+		}
+		return gungnir.Result{}, &gungnir.SessionError{Kind: kind, Usage: used,
+			Err: fmt.Errorf("opencode: %w (exit %d; stderr: %s)", err, res.ExitCode, tail(string(errOut.Bytes())))}
 	}
 	r.TranscriptPath, r.Provider, r.CLIVersion = transcriptPath(t), "openrouter", version
 	return r, nil
@@ -236,16 +263,18 @@ type event struct {
 // parse reads a session's events. Each step_finish carries one step's tokens, and the session's
 // usage is their sum: cache reads stay separate from other input tokens, because they bill at
 // another rate (spike C). The cost is the tool's own figure, or the price's, and is marked
-// estimated either way: the provider's real bill isn't in the events.
-func (a *Agent) parse(r io.Reader, exit int) (gungnir.Result, error) {
+// estimated either way: the provider's real bill isn't in the events. used is what the events
+// reported, whether or not the session is usable, and seen says whether there was any event at all.
+// The final answer is the text of the last step that said anything.
+func (a *Agent) parse(r io.Reader, exit int) (res gungnir.Result, used gungnir.Usage, seen bool, err error) {
 	sc := bufio.NewScanner(r)
 	sc.Buffer(make([]byte, 1<<20), 64<<20)
-	var u gungnir.Usage
-	var text, failure string
+	var text, answer, failed string
+	status := 0
 	steps := 0
-	var price Price
-	cost := 0.0
-	var in, out, reason, cw int64
+	var cost float64
+	var in, out, reason, cw, cacheRead int64
+	broken := false // a step_finish lacked a number
 	for sc.Scan() {
 		line := bytes.TrimSpace(sc.Bytes())
 		if len(line) == 0 || line[0] != '{' {
@@ -255,54 +284,67 @@ func (a *Agent) parse(r io.Reader, exit int) (gungnir.Result, error) {
 		if json.Unmarshal(line, &e) != nil {
 			continue
 		}
+		seen = true
 		switch e.Type {
+		case "step_start":
+			text = ""
 		case "text":
-			text = e.Part.Text
+			text += e.Part.Text
 		case "error":
-			failure = "error"
+			failed = "error"
 			if e.Error != nil {
-				failure = fmt.Sprintf("%s: %s", e.Error.Name, e.Error.Data.Message)
-				if e.Error.Data.StatusCode != 0 {
-					failure += fmt.Sprintf(" (API status %d)", e.Error.Data.StatusCode)
+				failed = fmt.Sprintf("%s: %s", e.Error.Name, e.Error.Data.Message)
+				status = e.Error.Data.StatusCode
+				if status != 0 {
+					failed += fmt.Sprintf(" (API status %d)", status)
 				}
 			}
 		case "step_finish":
 			tk := e.Part.Tokens
 			if tk == nil || tk.Input == nil || tk.Output == nil || tk.Cache == nil || tk.Cache.Read == nil || tk.Cache.Write == nil || e.Part.Cost == nil {
-				return gungnir.Result{}, errors.New("a step_finish event lacks tokens or cost; refusing to read missing numbers as zero")
+				broken = true
+				continue
 			}
 			steps++
 			in += *tk.Input
 			out += *tk.Output
 			cw += *tk.Cache.Write
-			u.CacheTok += *tk.Cache.Read
+			cacheRead += *tk.Cache.Read
 			if tk.Reasoning != nil {
 				reason += *tk.Reasoning
 			}
 			cost += *e.Part.Cost
+			if strings.TrimSpace(text) != "" {
+				answer = text
+			}
 		}
 	}
 	if err := sc.Err(); err != nil {
-		return gungnir.Result{}, err
+		return gungnir.Result{}, used, seen, err
 	}
-	u.InTok, u.OutTok, u.Turns = in+cw, out+reason, int64(steps)
+	used = gungnir.Usage{InTok: in + cw, OutTok: out + reason, CacheTok: cacheRead, Turns: int64(steps)}
 	if a.cfg.Price != nil {
-		price = *a.cfg.Price
-		cost = (float64(in)*price.Input + float64(out+reason)*price.Output + float64(u.CacheTok)*price.CacheRead + float64(cw)*price.CacheWrite) / 1e6
+		p := *a.cfg.Price
+		cost = (float64(in)*p.Input + float64(out+reason)*p.Output + float64(cacheRead)*p.CacheRead + float64(cw)*p.CacheWrite) / 1e6
 	}
-	u.CostUSD, u.CostEstimated = cost, true
-	res := gungnir.Result{Status: gungnir.StatusOK, Summary: clip(text), Usage: u}
+	used.CostUSD, used.CostEstimated = cost, true
 	switch {
-	case failure != "":
-		res.Status, res.Summary = gungnir.StatusFailed, failure
-	case steps == 0:
-		return gungnir.Result{}, errors.New("the session ended without a single step")
-	case exit != 0:
-		res.Status, res.Summary = gungnir.StatusFailed, fmt.Sprintf("opencode exited %d: %s", exit, res.Summary)
-	case cost == 0 && u.InTok+u.OutTok+u.CacheTok > 0:
-		return gungnir.Result{}, errors.New("opencode reported tokens but no cost for this model; set roles.<role>.price in factory.yaml so the caps can count dollars")
+	case broken:
+		return gungnir.Result{}, used, seen, errors.New("a step_finish event lacks tokens or cost; refusing to read missing numbers as zero")
+	case failed == "" && steps == 0:
+		return gungnir.Result{}, used, seen, errors.New("the session ended without a single step")
+	case cost == 0 && used.InTok+used.OutTok+used.CacheTok > 0:
+		// Whether the session succeeded or not: tokens with no dollars leave the dollar cap blind.
+		return gungnir.Result{}, used, seen, errors.New("opencode reported tokens but no cost for this model; set roles.<role>.price in factory.yaml so the caps can count dollars")
 	}
-	return res, res.Validate()
+	res = gungnir.Result{Status: gungnir.StatusOK, Summary: clip(answer), Output: strings.TrimSpace(answer), Usage: used}
+	switch {
+	case failed != "":
+		res.Status, res.Summary, res.Failure = gungnir.StatusFailed, failed, failure.Classify(status, failed)
+	case exit != 0:
+		res.Status, res.Summary, res.Failure = gungnir.StatusFailed, fmt.Sprintf("opencode exited %d: %s", exit, res.Summary), gungnir.FailureAgent
+	}
+	return res, used, seen, res.Validate()
 }
 
 func clip(s string) string {
