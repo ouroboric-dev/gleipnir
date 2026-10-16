@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/ouroboric-dev/gungnir"
 )
@@ -260,5 +261,72 @@ func TestACommandThatCouldNotRunIsTheSandboxsFailure(t *testing.T) {
 	tk.TranscriptDir = t.TempDir()
 	if _, err := agent().Run(ctx, tk); gungnir.FailureOf(err) != gungnir.FailureAgent {
 		t.Errorf("a session the context ended: Run() = %v (kind %q), want an agent failure", err, gungnir.FailureOf(err))
+	}
+}
+
+func assistant(id string, in, out, cacheNew, cacheRead int) string {
+	idField := ""
+	if id != "" {
+		idField = fmt.Sprintf(`"id":%q,`, id)
+	}
+	return fmt.Sprintf(`{"type":"assistant","message":{%s"role":"assistant","content":[{"type":"text","text":"x"}],"usage":{"input_tokens":%d,"output_tokens":%d,"cache_creation_input_tokens":%d,"cache_read_input_tokens":%d}}}`,
+		idField, in, out, cacheNew, cacheRead) + "\n"
+}
+
+// Backlog B-020: a session the timeout killed still spent what its messages reported, and the caps
+// must count it.
+func TestATimedOutSessionStillCountsItsUsage(t *testing.T) {
+	stream := initLine + "\n" +
+		assistant("m1", 3, 10, 100, 1000) + assistant("m1", 3, 40, 100, 1000) + // one message, repeated per content block
+		assistant("m2", 5, 20, 0, 2000) + assistant("", 1, 1, 0, 0)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Nanosecond)
+	defer cancel()
+	<-ctx.Done()
+	f := &fake{stdout: stream, err: ctx.Err()}
+	tk := task(f)
+	tk.TranscriptDir = t.TempDir()
+	_, err := agent().Run(ctx, tk)
+	var se *gungnir.SessionError
+	if !errors.As(err, &se) || se.Kind != gungnir.FailureAgent {
+		t.Fatalf("Run() = %v, want an agent failure", err)
+	}
+	want := gungnir.Usage{InTok: (3 + 100) + 5 + 1, OutTok: 40 + 20 + 1, CacheTok: 3000, Turns: 3, CostEstimated: true}
+	if se.Usage != want {
+		t.Errorf("usage = %+v, want %+v", se.Usage, want)
+	}
+}
+
+func TestASessionWithoutAResultCountsWhatItReported(t *testing.T) {
+	f := &fake{stdout: initLine + "\n" + assistant("m1", 7, 9, 0, 11) + "not json at all\n", exit: 137}
+	tk := task(f)
+	tk.TranscriptDir = t.TempDir()
+	_, err := agent().Run(context.Background(), tk)
+	var se *gungnir.SessionError
+	if !errors.As(err, &se) || se.Usage.InTok != 7 || se.Usage.OutTok != 9 || se.Usage.CacheTok != 11 || se.Usage.Turns != 1 {
+		t.Errorf("Run() = %v, usage %+v", err, se)
+	}
+	f = &fake{stdout: "", exit: 1}
+	tk = task(f)
+	tk.TranscriptDir = t.TempDir()
+	_, err = agent().Run(context.Background(), tk)
+	if !errors.As(err, &se) || se.Usage != (gungnir.Usage{}) {
+		t.Errorf("a session that printed nothing: usage %+v, want none", se.Usage)
+	}
+}
+
+// Backlog B-021: a chatty session is stopped by the bound, and the host never holds it all.
+func TestSessionOutputIsBounded(t *testing.T) {
+	old := maxStream
+	maxStream = 200
+	defer func() { maxStream = old }()
+	f := &fake{stdout: initLine + "\n" + assistant("m1", 1, 2, 0, 0) + strings.Repeat("noise\n", 100) + okResult + "\n"}
+	tk := task(f)
+	tk.TranscriptDir = t.TempDir()
+	r, err := agent().Run(context.Background(), tk)
+	if err == nil || gungnir.FailureOf(err) != gungnir.FailureAgent || !strings.Contains(err.Error(), "more than") {
+		t.Fatalf("Run() = %+v, %v; want an agent failure that says the output was too long", r, err)
+	}
+	if fi, err := os.Stat(filepath.Join(tk.TranscriptDir, "build-1.jsonl")); err != nil || fi.Size() > 200 {
+		t.Errorf("the transcript = %v, %v; want at most 200 bytes", fi, err)
 	}
 }

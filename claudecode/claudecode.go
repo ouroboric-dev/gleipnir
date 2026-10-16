@@ -19,6 +19,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"github.com/ouroboric-dev/gleipnir/bounded"
 	"github.com/ouroboric-dev/gleipnir/failure"
 	"github.com/ouroboric-dev/gungnir"
 )
@@ -29,6 +30,11 @@ const TokenVar = "CLAUDE_CODE_OAUTH_TOKEN"
 // refused are variables that would bill per token, or change who is billed: never passed, and a
 // task whose allowlist names one is refused (spec §6.3; sandbox spike B).
 var refused = []string{"ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL", "CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX", "CLAUDE_CODE_USE_FOUNDRY"}
+
+// maxStream is the most bytes of a session's output the adapter keeps in memory, and the most it
+// writes to the transcript. A chatty session is an agent failure, not a host that runs out of memory
+// (backlog B-021). A variable so a test can lower it.
+var maxStream = 32 << 20
 
 // Hosts are what the sandbox's firewall must open for a session.
 var Hosts = []string{"api.anthropic.com"}
@@ -98,9 +104,11 @@ func (a *Agent) Run(ctx context.Context, t gungnir.Task) (gungnir.Result, error)
 		return gungnir.Result{}, err
 	}
 	defer closeT()
-	var out, errOut bytes.Buffer
+	out, errOut := bounded.NewBuffer(maxStream), bounded.NewBuffer(maxStream)
+	tw := bounded.NewWriter(transcript, int64(maxStream))
 	res, err := t.Sandbox.Run(ctx, gungnir.Cmd{Argv: Args(t), Env: env, Stdin: strings.NewReader(t.Prompt),
-		Stdout: io.MultiWriter(&out, transcript), Stderr: &errOut})
+		Stdout: io.MultiWriter(out, tw), Stderr: errOut})
+	used := partialUsage(out.Bytes())
 	if err != nil {
 		// A session the timeout or the operator ended is the agent's; any other failure to run the
 		// command is the sandbox's (spec §12).
@@ -108,12 +116,16 @@ func (a *Agent) Run(ctx context.Context, t gungnir.Task) (gungnir.Result, error)
 		if ctx.Err() != nil {
 			kind = gungnir.FailureAgent
 		}
-		return gungnir.Result{}, &gungnir.SessionError{Kind: kind, Err: fmt.Errorf("claude-code: %w", err)}
+		return gungnir.Result{}, &gungnir.SessionError{Kind: kind, Err: fmt.Errorf("claude-code: %w", err), Usage: used}
 	}
-	r, seen, err := parse(&out)
+	if out.Truncated() || tw.Truncated() {
+		return gungnir.Result{}, &gungnir.SessionError{Kind: gungnir.FailureAgent, Usage: used,
+			Err: fmt.Errorf("claude-code: the session wrote more than %d MiB of output", maxStream>>20)}
+	}
+	r, seen, err := parse(bytes.NewReader(out.Bytes()))
 	if err != nil {
-		return gungnir.Result{}, &gungnir.SessionError{Kind: unfinished(seen, res.ExitCode, errOut.String()),
-			Err: fmt.Errorf("claude-code: %w (exit %d; stderr: %s)", err, res.ExitCode, tail(errOut.String()))}
+		return gungnir.Result{}, &gungnir.SessionError{Kind: unfinished(seen, res.ExitCode, string(errOut.Bytes())), Usage: used,
+			Err: fmt.Errorf("claude-code: %w (exit %d; stderr: %s)", err, res.ExitCode, tail(string(errOut.Bytes())))}
 	}
 	r.TranscriptPath = transcriptPath(t)
 	r.Provider = "anthropic"
@@ -254,4 +266,57 @@ func clip(s string) string {
 		return s
 	}
 	return string([]rune(s)[:1000]) + "…"
+}
+
+// partialUsage adds up what a session's assistant messages reported before it ended, for a session
+// that left no result event (a timeout, a crash). The numbers are a lower bound: the last message may be
+// cut off, and the cost isn't known (it is zero, marked estimated). A message the stream repeats, one
+// event per content block, counts once, at its largest figures; one with no id counts on its own, which
+// can only overcount, and a cap should err that way.
+func partialUsage(stream []byte) gungnir.Usage {
+	type tokens struct{ in, out, cacheNew, cacheRead int64 }
+	byID := map[string]tokens{}
+	var anon []tokens
+	sc := bufio.NewScanner(bytes.NewReader(stream))
+	sc.Buffer(make([]byte, 1<<20), 64<<20)
+	for sc.Scan() {
+		var e struct {
+			Type    string `json:"type"`
+			Message struct {
+				ID  string `json:"id"`
+				Raw struct {
+					Input     int64 `json:"input_tokens"`
+					Output    int64 `json:"output_tokens"`
+					CacheNew  int64 `json:"cache_creation_input_tokens"`
+					CacheRead int64 `json:"cache_read_input_tokens"`
+				} `json:"usage"`
+			} `json:"message"`
+		}
+		line := bytes.TrimSpace(sc.Bytes())
+		if len(line) == 0 || line[0] != '{' || json.Unmarshal(line, &e) != nil || e.Type != "assistant" {
+			continue
+		}
+		u := tokens{e.Message.Raw.Input, e.Message.Raw.Output, e.Message.Raw.CacheNew, e.Message.Raw.CacheRead}
+		if e.Message.ID == "" {
+			anon = append(anon, u)
+			continue
+		}
+		old := byID[e.Message.ID]
+		byID[e.Message.ID] = tokens{max(old.in, u.in), max(old.out, u.out), max(old.cacheNew, u.cacheNew), max(old.cacheRead, u.cacheRead)}
+	}
+	var sum gungnir.Usage
+	add := func(t tokens) {
+		sum.InTok += t.in + t.cacheNew
+		sum.OutTok += t.out
+		sum.CacheTok += t.cacheRead
+		sum.Turns++
+	}
+	for _, t := range byID {
+		add(t)
+	}
+	for _, t := range anon {
+		add(t)
+	}
+	sum.CostEstimated = sum.Turns > 0
+	return sum
 }
