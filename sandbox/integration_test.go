@@ -206,6 +206,10 @@ func TestSandboxDriverOnARealEngine(t *testing.T) {
 		time.Sleep(time.Second)
 		want("no sleep left", 1, "0", "sh", "-c", "for f in /proc/[0-9]*/cmdline; do tr '\\0' ' ' < $f; echo; done | grep -c 'sleep [3]00'")
 	})
+	t.Run("a background process dies with the command that started it", func(t *testing.T) {
+		want("start one", 0, "", "sh", "-c", "setsid sleep 301 >/dev/null 2>&1 < /dev/null &")
+		want("no sleep left", 1, "0", "sh", "-c", "for f in /proc/[0-9]*/cmdline; do tr '\\0' ' ' < $f; echo; done | grep -c 'sleep [3]01'")
+	})
 	t.Run("a credential given to one command is not in the next", func(t *testing.T) {
 		var out bytes.Buffer
 		d.Exec(ctx, env, gungnir.Cmd{Argv: []string{"sh", "-c", "echo $YGG_IT_SECRET"}, Env: map[string]string{"YGG_IT_SECRET": "only-this-command"}, Stdout: &out})

@@ -187,8 +187,10 @@ func (d *Driver) proveClosed(ctx context.Context, env gungnir.Env, project strin
 }
 
 // Exec runs cmd in the work container. Values in cmd.Env travel in the podman process's own
-// environment, never on a command line. When ctx ends, Exec stops the command, and kills what it
-// started in the container, which podman exec's client leaving would not.
+// environment, never on a command line. When the command ends, or ctx does, Exec kills every
+// process left in the container but its first, so nothing the command started outlives it: no
+// background process writes to the leaf while Odin checks, scans and commits it. A kill that can't
+// show the container clear is an error.
 func (d *Driver) Exec(ctx context.Context, env gungnir.Env, c gungnir.Cmd) (gungnir.ExecResult, error) {
 	if err := c.Validate(); err != nil {
 		return gungnir.ExecResult{}, err
@@ -212,9 +214,12 @@ func (d *Driver) Exec(ctx context.Context, env gungnir.Env, c gungnir.Cmd) (gung
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = c.Stdin, c.Stdout, c.Stderr
 	cmd.WaitDelay = 5 * time.Second
 	err := cmd.Run()
+	killErr := d.killAll(env)
 	if ctx.Err() != nil {
-		d.killAll(env)
 		return gungnir.ExecResult{}, ctx.Err()
+	}
+	if killErr != nil {
+		return gungnir.ExecResult{}, fmt.Errorf("stopping what %s started in the sandbox: %w", c.Argv[0], killErr)
 	}
 	var ee *exec.ExitError
 	if errors.As(err, &ee) {
@@ -236,13 +241,36 @@ func sortedEnv(m map[string]string) []string {
 	return ks
 }
 
-// killAll kills every process of the agent's user in the work container, which the container's
-// first process survives. It is for a command that outlived its client.
-func (d *Driver) killAll(env gungnir.Env) {
+// killAll kills every process in the work container but its first (which holds the container
+// up) and the kill's own shell. Every process there runs as the operator, so kill -1 reaches them
+// all. It kills again until no process is left but zombies, which the first process never reaps.
+func (d *Driver) killAll(env gungnir.Env) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-	d.run(ctx, d.Podman, "exec", env.Container, "sh", "-c", "kill -KILL -1")
+	_, err := d.run(ctx, d.Podman, "exec", env.Container, "sh", "-c", killScript)
+	return err
 }
+
+// killScript kills what runs in the container, as above, and exits 1 when a live process is left
+// after ten rounds.
+const killScript = `kill -KILL -1 2>/dev/null
+for round in 1 2 3 4 5 6 7 8 9 10; do
+  live=
+  for d in /proc/[0-9]*; do
+    p=${d#/proc/}
+    if [ "$p" = 1 ] || [ "$p" = "$$" ]; then continue; fi
+    st=
+    while read -r k v _; do
+      if [ "$k" = State: ]; then st=$v; break; fi
+    done 2>/dev/null <"$d/status"
+    case "$st" in ''|Z|X) ;; *) live=1 ;; esac
+  done
+  if [ -z "$live" ]; then exit 0; fi
+  kill -KILL -1 2>/dev/null
+  sleep 0.1
+done
+echo "processes are still running in the sandbox" >&2
+exit 1`
 
 // Down removes the sandbox's containers and network. It finds them by label, so it works for a
 // sandbox this process never started, and it is safe to call twice.

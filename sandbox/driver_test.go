@@ -39,7 +39,7 @@ case "$1" in
     case "$*" in
       *"test -f /run/ygg-fw/ready"*) exit "${STUB_READY_EXIT:-0}" ;;
       *"/dev/tcp/1.1.1.1/443"*) exit "${STUB_PROBE_EXIT:-124}" ;;
-      *"kill -KILL -1"*) exit 0 ;;
+      *"kill -KILL -1"*) exit "${STUB_KILL_EXIT:-0}" ;;
     esac
     [ -z "$STUB_EXEC_SLEEP" ] || exec sleep "$STUB_EXEC_SLEEP"
     echo "ran $*"; exit "${STUB_EXEC_EXIT:-0}" ;;
@@ -187,6 +187,38 @@ func TestExecKillsWhatItStartedWhenTheContextEnds(t *testing.T) {
 	}
 	if !strings.Contains(logOf(t, log), "exec work123 sh -c kill -KILL -1") {
 		t.Error("the command's processes were left running in the container")
+	}
+}
+
+// A command's background processes die when its Exec returns, even when the command exits
+// normally: none of them can write to the leaf during the checks, the scan or the checkpoint.
+func TestNothingACommandStartedSurvivesItsExec(t *testing.T) {
+	d, log, sp := fakeEngine(t)
+	env, err := d.Up(context.Background(), sp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("STUB_EXEC_EXIT", "0")
+	if res, err := d.Exec(context.Background(), env, gungnir.Cmd{Argv: []string{"go", "test"}}); err != nil || res.ExitCode != 0 {
+		t.Fatalf("Exec() = %+v, %v", res, err)
+	}
+	got := logOf(t, log)
+	cmd := strings.LastIndex(got, "-w /u/repos/app work123 go test")
+	kill := strings.LastIndex(got, "exec work123 sh -c "+killScript)
+	if cmd < 0 || kill < cmd {
+		t.Errorf("no kill of the container's processes after the command:\n%s", got)
+	}
+	t.Setenv("STUB_EXEC_EXIT", "3")
+	if res, err := d.Exec(context.Background(), env, gungnir.Cmd{Argv: []string{"go", "test"}}); err != nil || res.ExitCode != 3 {
+		t.Errorf("Exec() of a failing command = %+v, %v; want exit 3 as a result", res, err)
+	}
+	if n := strings.Count(logOf(t, log), "exec work123 sh -c "+killScript); n < 2 {
+		t.Errorf("a failing command's processes were not killed: %d kills", n)
+	}
+	// A kill that can't prove the container is clear fails the command: its work can't be trusted.
+	t.Setenv("STUB_KILL_EXIT", "1")
+	if _, err := d.Exec(context.Background(), env, gungnir.Cmd{Argv: []string{"go", "test"}}); err == nil {
+		t.Error("Exec() succeeded though processes it started may still run")
 	}
 }
 
