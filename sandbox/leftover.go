@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+	"strings"
 
 	"github.com/ouroboric-dev/gungnir"
 )
@@ -49,4 +50,33 @@ func (d *Driver) Leftovers(ctx context.Context) ([]Leftover, error) {
 // StopLeftover removes the containers and the network of a leftover's project.
 func (d *Driver) StopLeftover(ctx context.Context, l Leftover) error {
 	return d.Down(ctx, gungnir.Env{Project: l.Project, Name: l.Leaf, Container: l.Container})
+}
+
+// DevcontainerVersion is the version of the devcontainer CLI the factory was tested with (sandbox
+// spike, decided 2026-10-14).
+const DevcontainerVersion = "0.89.0"
+
+// Info is what ygg doctor checks about the engine.
+type Info struct {
+	Rootless bool   // the engine runs without root: a container escape lands as the operator's user
+	Podman   string // the engine's version
+}
+
+// Info asks the engine about itself.
+func (d *Driver) Info(ctx context.Context) (Info, error) {
+	out, err := d.run(ctx, d.Podman, "info", "--format", "{{.Host.Security.Rootless}} {{.Version.Version}}")
+	if err != nil {
+		return Info{}, err
+	}
+	var rootless, version string
+	if _, err := fmt.Sscan(string(out), &rootless, &version); err != nil || (rootless != "true" && rootless != "false") {
+		return Info{}, fmt.Errorf("the engine's answer can't be read: %q", out)
+	}
+	return Info{Rootless: rootless == "true", Podman: version}, nil
+}
+
+// DevcontainerCLI returns the version the devcontainer CLI reports.
+func (d *Driver) DevcontainerCLI(ctx context.Context) (string, error) {
+	out, err := d.run(ctx, d.Devcontainer, "--version")
+	return strings.TrimSpace(string(out)), err
 }

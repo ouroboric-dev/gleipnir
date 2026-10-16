@@ -244,3 +244,28 @@ exit 0
 		t.Errorf("StopLeftover didn't remove the project's containers:\n%s", got)
 	}
 }
+
+func TestInfoReadsRootlessAndTheVersions(t *testing.T) {
+	d, _, _ := fakeEngine(t)
+	p := filepath.Join(t.TempDir(), "podman")
+	os.WriteFile(p, []byte("#!/bin/sh\necho \"$STUB_INFO\"\n"), 0o755)
+	d.Podman = p
+	t.Setenv("STUB_INFO", "true 5.7.1")
+	if i, err := d.Info(context.Background()); err != nil || !i.Rootless || i.Podman != "5.7.1" {
+		t.Errorf("Info() = %+v, %v", i, err)
+	}
+	t.Setenv("STUB_INFO", "false 5.7.1")
+	if i, err := d.Info(context.Background()); err != nil || i.Rootless {
+		t.Errorf("a rootful engine: %+v, %v", i, err)
+	}
+	t.Setenv("STUB_INFO", "garbage")
+	if _, err := d.Info(context.Background()); err == nil {
+		t.Error("an unreadable answer was accepted")
+	}
+	dc := filepath.Join(t.TempDir(), "devcontainer")
+	os.WriteFile(dc, []byte("#!/bin/sh\necho 0.89.0\n"), 0o755)
+	d.Devcontainer = dc
+	if v, err := d.DevcontainerCLI(context.Background()); err != nil || v != DevcontainerVersion {
+		t.Errorf("DevcontainerCLI() = %q, %v", v, err)
+	}
+}
