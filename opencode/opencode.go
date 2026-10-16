@@ -5,10 +5,18 @@
 package opencode
 
 import (
+	"bufio"
+	"bytes"
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"os"
+	"path/filepath"
+	"slices"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/ouroboric-dev/gungnir"
 )
@@ -36,6 +44,8 @@ type Agent struct {
 	cfg   Config
 	model string // the id on OpenRouter, without the openrouter/ prefix
 }
+
+var _ gungnir.Agent = (*Agent)(nil)
 
 // strictProvider is what privacy: strict means on OpenRouter (sandbox spike C, decided 2026-10-14):
 // providers that keep no data and don't train, and no fallback to another one.
@@ -100,4 +110,205 @@ func Args(t gungnir.Task, model string) []string {
 		args = append(args, "--auto")
 	}
 	return args
+}
+
+// Run runs one session in the task's sandbox and reports how it ended and what it used.
+func (a *Agent) Run(ctx context.Context, t gungnir.Task) (gungnir.Result, error) {
+	if t.Sandbox == nil {
+		return gungnir.Result{}, gungnir.ErrNoSandbox
+	}
+	if t.Model != "" && t.Model != "openrouter/"+a.model {
+		return gungnir.Result{}, fmt.Errorf("opencode: the task's model %q isn't the adapter's %q", t.Model, "openrouter/"+a.model)
+	}
+	key := a.getenv(KeyVar)
+	if key == "" {
+		return gungnir.Result{}, fmt.Errorf("opencode: %s is not set; use a dedicated OpenRouter key with a credit limit", KeyVar)
+	}
+	conf, err := a.ConfigJSON(t)
+	if err != nil {
+		return gungnir.Result{}, err
+	}
+	env := map[string]string{
+		KeyVar: key, "OPENCODE_CONFIG_CONTENT": conf,
+		"OPENCODE_DISABLE_PROJECT_CONFIG": "1", "OPENCODE_DISABLE_CLAUDE_CODE": "1", "OPENCODE_DISABLE_EXTERNAL_SKILLS": "1",
+		"OPENCODE_DISABLE_AUTOUPDATE": "true", "OPENCODE_DISABLE_SHARE": "true", "OPENCODE_DISABLE_MODELS_FETCH": "true",
+	}
+	for _, k := range t.EnvAllowlist {
+		if k == KeyVar || strings.HasPrefix(k, "OPENCODE_") || slices.Contains([]string{"ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"}, k) {
+			return gungnir.Result{}, fmt.Errorf("opencode: %s may not be on a task's allowlist: the adapter sets its own variables, and holds no Anthropic credential", k)
+		}
+		if v := a.getenv(k); v != "" {
+			env[k] = v
+		}
+	}
+	if t.Timeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, t.Timeout)
+		defer cancel()
+	}
+	transcript, closeT, err := openTranscript(t)
+	if err != nil {
+		return gungnir.Result{}, err
+	}
+	defer closeT()
+	version := a.version(ctx, t, env)
+	var out, errOut bytes.Buffer
+	res, err := t.Sandbox.Run(ctx, gungnir.Cmd{Argv: Args(t, a.model), Env: env, Stdin: strings.NewReader(t.Prompt),
+		Stdout: io.MultiWriter(&out, transcript), Stderr: &errOut})
+	if err != nil {
+		return gungnir.Result{}, fmt.Errorf("opencode: %w", err)
+	}
+	r, err := a.parse(&out, res.ExitCode)
+	if err != nil {
+		return gungnir.Result{}, fmt.Errorf("opencode: %w (exit %d; stderr: %s)", err, res.ExitCode, tail(errOut.String()))
+	}
+	r.TranscriptPath, r.Provider, r.CLIVersion = transcriptPath(t), "openrouter", version
+	return r, nil
+}
+
+// version asks the tool for its version in the sandbox. A session that can't say is still a
+// session; the version is for the ledger.
+func (a *Agent) version(ctx context.Context, t gungnir.Task, env map[string]string) string {
+	var out bytes.Buffer
+	res, err := t.Sandbox.Run(ctx, gungnir.Cmd{Argv: []string{"opencode", "--version"}, Env: map[string]string{"OPENCODE_DISABLE_PROJECT_CONFIG": "1"}, Stdout: &out})
+	if err != nil || res.ExitCode != 0 {
+		return ""
+	}
+	return strings.TrimSpace(out.String())
+}
+
+func transcriptPath(t gungnir.Task) string {
+	if t.TranscriptDir == "" {
+		return ""
+	}
+	return filepath.Join(t.TranscriptDir, fmt.Sprintf("%s-%d.jsonl", t.Node, t.Attempt))
+}
+
+func openTranscript(t gungnir.Task) (io.Writer, func(), error) {
+	p := transcriptPath(t)
+	if p == "" {
+		return io.Discard, func() {}, nil
+	}
+	if err := os.MkdirAll(t.TranscriptDir, 0o755); err != nil {
+		return nil, nil, err
+	}
+	f, err := os.Create(p)
+	if err != nil {
+		return nil, nil, err
+	}
+	return f, func() { f.Close() }, nil
+}
+
+func tail(s string) string {
+	s = strings.TrimSpace(s)
+	if len(s) > 300 {
+		return "…" + s[len(s)-300:]
+	}
+	return s
+}
+
+type event struct {
+	Type string `json:"type"`
+	Part struct {
+		Type   string `json:"type"`
+		Text   string `json:"text"`
+		Reason string `json:"reason"`
+		Tokens *struct {
+			Input     *int64 `json:"input"`
+			Output    *int64 `json:"output"`
+			Reasoning *int64 `json:"reasoning"`
+			Cache     *struct {
+				Write *int64 `json:"write"`
+				Read  *int64 `json:"read"`
+			} `json:"cache"`
+		} `json:"tokens"`
+		Cost *float64 `json:"cost"`
+	} `json:"part"`
+	Error *struct {
+		Name string `json:"name"`
+		Data struct {
+			Message    string `json:"message"`
+			StatusCode int    `json:"statusCode"`
+		} `json:"data"`
+	} `json:"error"`
+}
+
+// parse reads a session's events. Each step_finish carries one step's tokens, and the session's
+// usage is their sum: cache reads stay separate from other input tokens, because they bill at
+// another rate (spike C). The cost is the tool's own figure, or the price's, and is marked
+// estimated either way: the provider's real bill isn't in the events.
+func (a *Agent) parse(r io.Reader, exit int) (gungnir.Result, error) {
+	sc := bufio.NewScanner(r)
+	sc.Buffer(make([]byte, 1<<20), 64<<20)
+	var u gungnir.Usage
+	var text, failure string
+	steps := 0
+	var price Price
+	cost := 0.0
+	var in, out, reason, cw int64
+	for sc.Scan() {
+		line := bytes.TrimSpace(sc.Bytes())
+		if len(line) == 0 || line[0] != '{' {
+			continue
+		}
+		var e event
+		if json.Unmarshal(line, &e) != nil {
+			continue
+		}
+		switch e.Type {
+		case "text":
+			text = e.Part.Text
+		case "error":
+			failure = "error"
+			if e.Error != nil {
+				failure = fmt.Sprintf("%s: %s", e.Error.Name, e.Error.Data.Message)
+				if e.Error.Data.StatusCode != 0 {
+					failure += fmt.Sprintf(" (API status %d)", e.Error.Data.StatusCode)
+				}
+			}
+		case "step_finish":
+			tk := e.Part.Tokens
+			if tk == nil || tk.Input == nil || tk.Output == nil || tk.Cache == nil || tk.Cache.Read == nil || tk.Cache.Write == nil || e.Part.Cost == nil {
+				return gungnir.Result{}, errors.New("a step_finish event lacks tokens or cost; refusing to read missing numbers as zero")
+			}
+			steps++
+			in += *tk.Input
+			out += *tk.Output
+			cw += *tk.Cache.Write
+			u.CacheTok += *tk.Cache.Read
+			if tk.Reasoning != nil {
+				reason += *tk.Reasoning
+			}
+			cost += *e.Part.Cost
+		}
+	}
+	if err := sc.Err(); err != nil {
+		return gungnir.Result{}, err
+	}
+	u.InTok, u.OutTok, u.Turns = in+cw, out+reason, int64(steps)
+	if a.cfg.Price != nil {
+		price = *a.cfg.Price
+		cost = (float64(in)*price.Input + float64(out+reason)*price.Output + float64(u.CacheTok)*price.CacheRead + float64(cw)*price.CacheWrite) / 1e6
+	}
+	u.CostUSD, u.CostEstimated = cost, true
+	res := gungnir.Result{Status: gungnir.StatusOK, Summary: clip(text), Usage: u}
+	switch {
+	case failure != "":
+		res.Status, res.Summary = gungnir.StatusFailed, failure
+	case steps == 0:
+		return gungnir.Result{}, errors.New("the session ended without a single step")
+	case exit != 0:
+		res.Status, res.Summary = gungnir.StatusFailed, fmt.Sprintf("opencode exited %d: %s", exit, res.Summary)
+	case cost == 0 && u.InTok+u.OutTok+u.CacheTok > 0:
+		return gungnir.Result{}, errors.New("opencode reported tokens but no cost for this model; set roles.<role>.price in factory.yaml so the caps can count dollars")
+	}
+	return res, res.Validate()
+}
+
+func clip(s string) string {
+	s = strings.TrimSpace(s)
+	if utf8.RuneCountInString(s) <= 1000 {
+		return s
+	}
+	return string([]rune(s)[:1000]) + "…"
 }
