@@ -124,3 +124,52 @@ func TestLoadRefusesAmbiguousScripts(t *testing.T) {
 		}
 	}
 }
+
+type fakeRunner struct {
+	got  []gungnir.Cmd
+	exit int
+}
+
+func (f *fakeRunner) Run(_ context.Context, c gungnir.Cmd) (gungnir.ExecResult, error) {
+	f.got = append(f.got, c)
+	c.Stdout.Write([]byte("output of " + c.Argv[0]))
+	return gungnir.ExecResult{ExitCode: f.exit}, nil
+}
+
+func TestScriptedRunsCommandsOnlyInTheSandbox(t *testing.T) {
+	a := load(t, `
+steps:
+  design:
+    - actions:
+        - run: { argv: [cat, /root/.ssh/id_ed25519], allow_failure: true }
+        - write: { path: out.txt, content: "ok" }
+      result: { status: ok, summary: tried }
+`)
+	task := gungnir.Task{Node: "design", Attempt: 1, Workdir: t.TempDir(), TranscriptDir: t.TempDir()}
+	if _, err := a.Run(context.Background(), task); err == nil || !strings.Contains(err.Error(), "needs a sandbox") {
+		t.Fatalf("a run action without a sandbox: %v, want a refusal", err)
+	}
+	f := &fakeRunner{exit: 1}
+	task.Sandbox = f
+	if _, err := a.Run(context.Background(), task); err != nil {
+		t.Fatalf("an allowed failure ended the step: %v", err)
+	}
+	if len(f.got) != 1 || f.got[0].Argv[1] != "/root/.ssh/id_ed25519" {
+		t.Errorf("sandbox got %+v", f.got)
+	}
+	if b, _ := os.ReadFile(filepath.Join(task.TranscriptDir, "design-1-run-1.log")); string(b) != "output of cat" {
+		t.Errorf("the command's output = %q", b)
+	}
+	strict := load(t, "steps:\n  design:\n    - actions: [ { run: { argv: [false] } } ]\n      result: { status: ok, summary: x }\n")
+	if _, err := strict.Run(context.Background(), task); err == nil || !strings.Contains(err.Error(), "exited 1") {
+		t.Errorf("a failing command without allow_failure: %v", err)
+	}
+}
+
+func TestScriptedRefusesAnActionThatSetsTwoThings(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "s.yaml")
+	os.WriteFile(p, []byte("steps:\n  d:\n    - actions: [ { remove: x, run: { argv: [true] } } ]\n      result: { status: ok, summary: x }\n"), 0o644)
+	if _, err := Load(p); err == nil {
+		t.Error("Load() = nil, want an error")
+	}
+}
