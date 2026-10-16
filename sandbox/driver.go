@@ -26,6 +26,7 @@ type Driver struct {
 	Compose      string        // the compose provider; "podman-compose" by default
 	ReadyTimeout time.Duration // how long Up waits for the firewall; a minute by default
 	UpTimeout    time.Duration // how long devcontainer up may take; five minutes by default (a first start hung for eight in the spike)
+	DownTimeout  time.Duration // how long Down may take; two minutes by default
 
 	cfg    Config
 	engine string
@@ -54,7 +55,7 @@ func New(socket string, cfg Config, work string) (*Driver, error) {
 	if err := os.WriteFile(filepath.Join(auth, "auth.json"), []byte("{}\n"), 0o600); err != nil {
 		return nil, err
 	}
-	return &Driver{Podman: "podman", Devcontainer: "devcontainer", Compose: "podman-compose", ReadyTimeout: time.Minute, UpTimeout: 5 * time.Minute,
+	return &Driver{Podman: "podman", Devcontainer: "devcontainer", Compose: "podman-compose", ReadyTimeout: time.Minute, UpTimeout: 5 * time.Minute, DownTimeout: 2 * time.Minute,
 		cfg: cfg, engine: socket, work: work, auth: auth}, nil
 }
 
@@ -301,6 +302,13 @@ exit 1`
 func (d *Driver) Down(ctx context.Context, env gungnir.Env) error {
 	if env.Project == "" {
 		return errors.New("no sandbox project to stop")
+	}
+	// Down runs when a run ends, with its own context: an engine that hangs must not hang ygg with it
+	// (backlog B-028). What it couldn't remove stays recorded in run.json, and ygg doctor finds it.
+	if d.DownTimeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, d.DownTimeout)
+		defer cancel()
 	}
 	ids, err := d.run(ctx, d.Podman, "ps", "-a", "-q", "--filter", "label=com.docker.compose.project="+env.Project)
 	if err != nil {

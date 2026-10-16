@@ -35,7 +35,8 @@ echo "env host=${CONTAINER_HOST:-} auth=${REGISTRY_AUTH_FILE:-} docker=${DOCKER_
 case "$1" in
   image) case " $STUB_MISSING " in *" $3 "*) exit 1 ;; esac; exit 0 ;;
   network) [ "$2" = exists ] && exit 0; exit 0 ;;
-  ps) case "$*" in *service=fw*) echo fw456 ;; *) echo work123; echo fw456 ;; esac; exit 0 ;;
+  ps) [ -z "$STUB_PS_SLEEP" ] || exec sleep "$STUB_PS_SLEEP"
+    case "$*" in *service=fw*) echo fw456 ;; *) echo work123; echo fw456 ;; esac; exit 0 ;;
   exec)
     case "$*" in
       *"test -f /run/ygg-fw/ready"*) exit "${STUB_READY_EXIT:-0}" ;;
@@ -394,5 +395,17 @@ func TestUpRefusesAProbeThatCouldNotRun(t *testing.T) {
 	t.Setenv("STUB_PROBE_EXIT", "124") // timeout's own status for a connect that was dropped: closed
 	if _, err := d.Up(context.Background(), sp); err != nil {
 		t.Errorf("a connect that timed out must show the network closed: %v", err)
+	}
+}
+
+// Backlog B-028: a hung engine must not hang Down.
+func TestDownGivesUpOnAHungEngine(t *testing.T) {
+	d, _, sp := fakeEngine(t)
+	d.DownTimeout = 300 * time.Millisecond
+	t.Setenv("STUB_PS_SLEEP", "30")
+	began := time.Now()
+	err := d.Down(context.WithoutCancel(context.Background()), gungnir.Env{Project: Project(sp), Container: "work123"})
+	if err == nil || time.Since(began) > 10*time.Second {
+		t.Errorf("Down() = %v after %v; want an error, promptly", err, time.Since(began))
 	}
 }
