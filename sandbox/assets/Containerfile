@@ -1,0 +1,38 @@
+# The factory layer of a leaf's sandbox (spec §6.1). Two targets:
+#   work  the realm's stack image, plus the agent CLIs pinned to exact versions, gitleaks, and
+#         managed settings; it holds no credential and no auto-update.
+#   fw    the firewall sidecar: iptables and nothing else of the stack.
+# Built by the driver with isolated registry auth and --pull=never, after it pulled the bases by digest.
+ARG NODE_IMAGE
+ARG STACK_IMAGE
+
+FROM ${NODE_IMAGE} AS tools
+ARG CLAUDE_CODE_VERSION
+ARG OPENCODE_VERSION
+ARG GITLEAKS_VERSION
+ARG GITLEAKS_SHA256
+RUN npm install -g --prefix /opt/ygg --no-audit --no-fund \
+      @anthropic-ai/claude-code@${CLAUDE_CODE_VERSION} opencode-ai@${OPENCODE_VERSION} \
+ && npm cache clean --force
+RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates \
+ && curl -fsSL -o /tmp/gitleaks.tgz "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" \
+ && echo "${GITLEAKS_SHA256}  /tmp/gitleaks.tgz" | sha256sum -c - \
+ && tar -xzf /tmp/gitleaks.tgz -C /opt/ygg/bin gitleaks \
+ && cp /usr/local/bin/node /opt/ygg/bin/node
+
+FROM ${NODE_IMAGE} AS fw
+RUN apt-get update && apt-get install -y --no-install-recommends iptables \
+ && rm -rf /var/lib/apt/lists/*
+
+FROM ${STACK_IMAGE} AS work
+COPY --from=tools /opt/ygg /opt/ygg
+RUN command -v bash >/dev/null && command -v timeout >/dev/null && command -v git >/dev/null \
+ || { echo "the stack image needs bash, timeout and git" >&2; exit 1; }
+RUN mkdir -p /home/ygg /etc/claude-code && chmod 1777 /home/ygg
+COPY managed-settings.json /etc/claude-code/managed-settings.json
+ENV PATH=/opt/ygg/bin:$PATH \
+    HOME=/home/ygg \
+    DISABLE_AUTOUPDATER=1 \
+    CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 \
+    DO_NOT_TRACK=1 \
+    OPENCODE_DISABLE_AUTOUPDATE=true

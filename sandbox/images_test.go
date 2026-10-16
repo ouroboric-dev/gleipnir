@@ -1,0 +1,63 @@
+package sandbox
+
+import (
+	"context"
+	"encoding/json"
+	"strings"
+	"testing"
+)
+
+const stackImage = "docker.io/library/golang:1.26.7-bookworm@sha256:e8c859f5632dcfde7b32d2012b4351728f6437930887c2f6a91ea242459e5514"
+
+func TestImageTagsFollowEveryInput(t *testing.T) {
+	a, b := ImagesFor(stackImage), ImagesFor(stackImage+"x")
+	if a != ImagesFor(stackImage) {
+		t.Error("the same inputs gave two tags")
+	}
+	if a.Work == b.Work {
+		t.Error("a different stack kept the work image's tag")
+	}
+	if a.Firewall != b.Firewall {
+		t.Error("the firewall image depends on the stack, which it doesn't hold")
+	}
+	if !strings.HasPrefix(a.Work, "localhost/ygg-work:") || !strings.HasPrefix(a.Firewall, "localhost/ygg-fw:") {
+		t.Errorf("tags = %+v", a)
+	}
+}
+
+func TestTheFactoryLayerIsPinned(t *testing.T) {
+	if !strings.Contains(NodeImage, "@sha256:") || len(GitleaksSHA256) != 64 {
+		t.Error("a base image or the gitleaks archive isn't pinned by digest")
+	}
+	for _, want := range []string{"sha256sum -c", "npm install -g --prefix /opt/ygg", "DISABLE_AUTOUPDATER=1", "AS fw", "AS work",
+		"the stack image needs bash, timeout and git"} {
+		if !strings.Contains(containerfile, want) {
+			t.Errorf("the Containerfile lacks %q", want)
+		}
+	}
+	if strings.Contains(containerfile, "@latest") || strings.Contains(containerfile, "ANTHROPIC_API_KEY") {
+		t.Error("the Containerfile uses a floating version or names an API key")
+	}
+	var ms map[string]any
+	if err := json.Unmarshal([]byte(ManagedSettings()), &ms); err != nil || ms["allowManagedHooksOnly"] != true || ms["allowManagedMcpServersOnly"] != true || len(ms["allowedMcpServers"].([]any)) != 0 { // with only the first two keys, a project's .mcp.json server still ran (2026-10-16)
+		t.Errorf("managed settings = %v, %v; they must block repo hooks and project MCP servers", ms, err)
+	}
+}
+
+func TestBuildPullsWithIsolatedAuthThenBuildsNeverPulling(t *testing.T) {
+	d, log, _ := fakeEngine(t)
+	imgs, err := d.Build(context.Background(), stackImage)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := logOf(t, log)
+	for _, want := range []string{"podman pull -q --authfile " + d.auth + "/auth.json " + NodeImage, "podman pull -q --authfile " + d.auth + "/auth.json " + stackImage,
+		"--pull=never --target fw -t " + imgs.Firewall, "--pull=never --target work -t " + imgs.Work, "STACK_IMAGE=" + stackImage} {
+		if !strings.Contains(got, want) {
+			t.Errorf("the engine calls lack %q:\n%s", want, got)
+		}
+	}
+	if strings.Index(got, "podman pull") > strings.Index(got, "podman build") {
+		t.Error("a build ran before the pulls")
+	}
+}
