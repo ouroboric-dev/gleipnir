@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/ouroboric-dev/gungnir"
+	"github.com/ouroboric-dev/gungnir/schema"
 )
 
 func load(t *testing.T, script string) *Agent {
@@ -179,5 +180,121 @@ func TestScriptedReportsAProviderAndAToolVersionWhenTheScriptGivesThem(t *testin
 	r, err := a.Run(context.Background(), gungnir.Task{Node: "design", Attempt: 1, Workdir: t.TempDir()})
 	if err != nil || r.Provider != "anthropic" || r.CLIVersion != "2.1.284" {
 		t.Errorf("Run() = %+v, %v", r, err)
+	}
+}
+
+func run(t *testing.T, a *Agent, node string, attempt int) (gungnir.Result, error) {
+	t.Helper()
+	return a.Run(context.Background(), gungnir.Task{Node: node, Attempt: attempt, Workdir: t.TempDir()})
+}
+
+func TestScriptedFailsTheWayTheScriptSays(t *testing.T) {
+	a := load(t, `
+steps:
+  build:
+    - error: the CLI crashed
+      kind: transient
+    - error: out of credits
+      kind: quota
+      usage: { in: 100, out: 20, turns: 2 }
+    - error: podman is gone
+      kind: infra
+    - error: just broke
+    - result: { status: failed, summary: rate limited, failure: transient }
+    - result: { status: failed, summary: no credits, failure: quota, usage: { in: 5, out: 1, turns: 1 } }
+    - result: { status: failed, summary: tests fail }
+`)
+	want := []gungnir.FailureKind{gungnir.FailureTransient, gungnir.FailureQuota, gungnir.FailureInfra, gungnir.FailureAgent}
+	for i, k := range want {
+		_, err := run(t, a, "build", i+1)
+		if err == nil || gungnir.FailureOf(err) != k {
+			t.Errorf("attempt %d: Run() = %v (kind %q), want an error of kind %q", i+1, err, gungnir.FailureOf(err), k)
+		}
+	}
+	_, err := run(t, a, "build", 2)
+	var se *gungnir.SessionError
+	if !errors.As(err, &se) || se.Usage.InTok != 100 || se.Usage.OutTok != 20 || se.Usage.Turns != 2 {
+		t.Errorf("the quota error's usage = %+v", se)
+	}
+	if _, err := run(t, a, "build", 4); err == nil || errors.As(err, &se) {
+		t.Errorf("an error with no kind and no usage must stay a plain error, got %T %v", err, err)
+	}
+	for i, k := range []gungnir.FailureKind{gungnir.FailureTransient, gungnir.FailureQuota, ""} {
+		r, err := run(t, a, "build", i+5)
+		if err != nil || r.Status != gungnir.StatusFailed || r.Failure != k {
+			t.Errorf("result %d: %+v, %v; want a failed result of kind %q", i+5, r, err, k)
+		}
+	}
+}
+
+func TestAHangEndsWithTheContextAndItsUsage(t *testing.T) {
+	a := load(t, "steps:\n  build:\n    - hang: true\n      usage: { in: 9, out: 1, turns: 1 }\n")
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	_, err := a.Run(ctx, gungnir.Task{Node: "build", Attempt: 1, Workdir: t.TempDir()})
+	var se *gungnir.SessionError
+	if !errors.Is(err, context.DeadlineExceeded) || !errors.As(err, &se) || se.Usage.InTok != 9 {
+		t.Errorf("Run() = %v; want the context's error carrying the usage", err)
+	}
+}
+
+func TestActionsHappenBeforeAnErrorOrAHang(t *testing.T) {
+	a := load(t, "steps:\n  build:\n    - actions: [ { write: { path: half.txt, content: \"partial\\n\" } } ]\n      error: timed out half way\n")
+	work := t.TempDir()
+	if _, err := a.Run(context.Background(), gungnir.Task{Node: "build", Attempt: 1, Workdir: work}); err == nil {
+		t.Fatal("Run() = nil, want the step's error")
+	}
+	if b, err := os.ReadFile(filepath.Join(work, "half.txt")); err != nil || string(b) != "partial\n" {
+		t.Errorf("half.txt = %q, %v; a session that fails half way leaves its work behind", b, err)
+	}
+}
+
+func TestAResultCarriesItsFinalAnswerOrAReportOfFindings(t *testing.T) {
+	a := load(t, `
+steps:
+  review:
+    - result: { status: ok, summary: reviewed, output: "LGTM, ship it" }
+    - result:
+        status: ok
+        summary: reviewed
+        report:
+          - { id: spec-1, source: spec, severity: major, location: "api/auth.go:42", claim: no throttle, status: open }
+          - { id: spec-2, source: spec, severity: minor, location: "api/auth.go:50", claim: no doc, status: fixed, proof: "api/auth.go:51; check test passed" }
+    - result: { status: ok, summary: reviewed, report: [] }
+`)
+	r, err := run(t, a, "review", 1)
+	if err != nil || r.Output != "LGTM, ship it" {
+		t.Errorf("attempt 1: %+v, %v", r, err)
+	}
+	r, err = run(t, a, "review", 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rep, perr := schema.ParseReport([]byte(r.Output))
+	if perr != nil || len(rep.Findings) != 2 || rep.Findings[1].Proof == "" || rep.Findings[0].Location != "api/auth.go:42" {
+		t.Errorf("attempt 2: report %+v, %v from %q", rep, perr, r.Output)
+	}
+	r, err = run(t, a, "review", 3)
+	if rep, perr := schema.ParseReport([]byte(r.Output)); err != nil || perr != nil || len(rep.Findings) != 0 {
+		t.Errorf("attempt 3: an empty report must be a well-formed report with no findings: %q, %v, %v", r.Output, perr, err)
+	}
+}
+
+func TestScriptedRefusesAScriptThatNamesNoSuchFailure(t *testing.T) {
+	for name, script := range map[string]string{
+		"an unknown kind":           "steps:\n  a:\n    - error: x\n      kind: flaky\n",
+		"a kind on a hang":          "steps:\n  a:\n    - hang: true\n      kind: quota\n",
+		"a kind on a result":        "steps:\n  a:\n    - result: { status: ok }\n      kind: quota\n",
+		"usage beside a result":     "steps:\n  a:\n    - result: { status: ok }\n      usage: { in: 1 }\n",
+		"a failure on a success":    "steps:\n  a:\n    - result: { status: ok, failure: transient }\n",
+		"infra as a result failure": "steps:\n  a:\n    - result: { status: failed, failure: infra }\n",
+		"an unknown failure":        "steps:\n  a:\n    - result: { status: failed, failure: flaky }\n",
+		"output and report":         "steps:\n  a:\n    - result: { status: ok, output: x, report: [] }\n",
+	} {
+		p := filepath.Join(t.TempDir(), "s.yaml")
+		os.WriteFile(p, []byte(script), 0o644)
+		if _, err := Load(p); err == nil {
+			t.Errorf("%s: Load() = nil, want an error", name)
+		}
 	}
 }
