@@ -303,7 +303,7 @@ func TestScriptedRefusesAScriptThatNamesNoSuchFailure(t *testing.T) {
 func TestTheTranscriptRecordsWhatTheSessionWasGiven(t *testing.T) {
 	a := load(t, "steps:\n  build:\n    - result: { status: ok }\n")
 	dir := t.TempDir()
-	r, err := a.Run(context.Background(), gungnir.Task{Node: "build", Attempt: 1, Workdir: t.TempDir(), TranscriptDir: dir, Prompt: "Build it.", MaxTurns: 7})
+	r, err := a.Run(context.Background(), gungnir.Task{Node: "build", Attempt: 1, Workdir: t.TempDir(), TranscriptDir: dir, Prompt: "Build it.", MaxTurns: 7, ReadOnly: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -311,8 +311,9 @@ func TestTheTranscriptRecordsWhatTheSessionWasGiven(t *testing.T) {
 	var got struct {
 		Prompt   string `json:"prompt"`
 		MaxTurns int    `json:"max_turns"`
+		ReadOnly bool   `json:"read_only"`
 	}
-	if err := json.Unmarshal(b, &got); err != nil || got.Prompt != "Build it." || got.MaxTurns != 7 {
+	if err := json.Unmarshal(b, &got); err != nil || got.Prompt != "Build it." || got.MaxTurns != 7 || !got.ReadOnly {
 		t.Errorf("the transcript = %s, %v", b, err)
 	}
 }
