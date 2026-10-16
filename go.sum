@@ -1,4 +1,6 @@
-github.com/ouroboric-dev/gungnir v0.0.0-20261015072316-d35e622e0126 h1:oUAhltWcmd3f/5RUfFvyEwBBM2zoib4seS9uX98jGuM=
-github.com/ouroboric-dev/gungnir v0.0.0-20261015072316-d35e622e0126/go.mod h1:PvsAmGDtAOx6OrUU3J3/A6XJAZbeVKxo1j8fcrAAipI=
+github.com/ouroboric-dev/gungnir v0.0.0-20261016183606-768edab1e4a0 h1:w7LyhCIa3pYnM9t+/BZ8tUvZJU2qV4CLPXfRbLh0gGM=
+github.com/ouroboric-dev/gungnir v0.0.0-20261016183606-768edab1e4a0/go.mod h1:NEj+bRbIgN2QLv8AbnDF4CAn9IYV0m/8i4j25unu10s=
+github.com/ouroboric-dev/havamal v0.0.0-20261016183637-e7b4e47b4785 h1:pE5v9ES/EPArdNoSH0NPDlDHf4vgG80S+KJV4O0w3HM=
+github.com/ouroboric-dev/havamal v0.0.0-20261016183637-e7b4e47b4785/go.mod h1:wGR2yR184wSq86n1p4tPv/nqgq3O8+JLw7b5Rw6+BPo=
 go.yaml.in/yaml/v3 v3.0.5 h1:N6y/pJk8buWs9NY5ERU2HSMfm+IuD/OtfdAnq6kESPw=
 go.yaml.in/yaml/v3 v3.0.5/go.mod h1:HVTZu1O7/Vkt2N+BFy8Zza+lnLsABggaTM2ZpNIGuKg=

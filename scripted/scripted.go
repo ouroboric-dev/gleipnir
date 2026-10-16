@@ -29,10 +29,19 @@ type Step struct {
 	Error   string   `yaml:"error"` // Run returns this error: an agent failure
 }
 
-// Action changes one file in the workdir. Exactly one field is set.
+// Action changes one file in the workdir, or runs one command in the task's sandbox. Exactly one
+// field is set. A run action is how escape tests act as a hostile agent inside the sandbox.
 type Action struct {
 	Write  *Write `yaml:"write"`
 	Remove string `yaml:"remove"`
+	Run    *Run   `yaml:"run"`
+}
+
+// Run is a command in the sandbox, without a shell. A non-zero exit fails the step, unless
+// AllowFailure is set: an escape attempt is meant to fail, and the test then checks what it left.
+type Run struct {
+	Argv         []string `yaml:"argv"`
+	AllowFailure bool     `yaml:"allow_failure"`
 }
 
 // Write writes Content to Path, creating parent directories.
@@ -43,9 +52,11 @@ type Write struct {
 
 // Outcome is the result a step reports.
 type Outcome struct {
-	Status  gungnir.Status `yaml:"status"`
-	Summary string         `yaml:"summary"`
-	Usage   struct {
+	Status     gungnir.Status `yaml:"status"`
+	Summary    string         `yaml:"summary"`
+	Provider   string         `yaml:"provider"`    // who served the model, as a real adapter reports it
+	CLIVersion string         `yaml:"cli_version"` // the agent tool's version, as a real adapter reports it
+	Usage      struct {
 		In            int64   `yaml:"in"`
 		Out           int64   `yaml:"out"`
 		Cache         int64   `yaml:"cache"`
@@ -100,10 +111,18 @@ func (st Step) check() error {
 		return fmt.Errorf("result status %q is neither ok nor failed", st.Result.Status)
 	}
 	for _, a := range st.Actions {
+		set := 0
+		for _, b := range []bool{a.Write != nil, a.Remove != "", a.Run != nil} {
+			if b {
+				set++
+			}
+		}
 		switch {
-		case a.Write != nil && a.Remove != "":
-			return errors.New("an action sets both write and remove")
-		case a.Write != nil && !filepath.IsLocal(a.Write.Path), a.Write == nil && !filepath.IsLocal(a.Remove):
+		case set != 1:
+			return errors.New("an action sets exactly one of write, remove and run")
+		case a.Run != nil && (len(a.Run.Argv) == 0 || a.Run.Argv[0] == ""):
+			return errors.New("a run action needs a command")
+		case a.Write != nil && !filepath.IsLocal(a.Write.Path), a.Remove != "" && !filepath.IsLocal(a.Remove):
 			return errors.New("an action's path must be a relative path inside the workdir")
 		}
 	}
@@ -136,19 +155,51 @@ func (a *Agent) Run(ctx context.Context, t gungnir.Task) (gungnir.Result, error)
 		return gungnir.Result{}, err
 	}
 	defer root.Close()
-	for _, act := range st.Actions {
+	for i, act := range st.Actions {
+		if act.Run != nil {
+			if err := runInSandbox(ctx, t, i, act.Run); err != nil {
+				return gungnir.Result{}, fmt.Errorf("scripted: %w", err)
+			}
+			continue
+		}
 		if err := apply(root, act); err != nil {
 			return gungnir.Result{}, fmt.Errorf("scripted: %w", err)
 		}
 	}
 	o := st.Result
 	return gungnir.Result{
-		Status:  o.Status,
-		Summary: o.Summary,
+		Status:     o.Status,
+		Summary:    o.Summary,
+		Provider:   o.Provider,
+		CLIVersion: o.CLIVersion,
 		Usage: gungnir.Usage{InTok: o.Usage.In, OutTok: o.Usage.Out, CacheTok: o.Usage.Cache,
 			Turns: o.Usage.Turns, CostUSD: o.Usage.CostUSD, CostEstimated: o.Usage.CostEstimated},
 		TranscriptPath: transcript,
 	}, nil
+}
+
+// runInSandbox runs one command through the task's sandbox, and keeps its output beside the
+// transcript. A task without a sandbox can't run one: the scripted adapter never runs commands on the
+// host.
+func runInSandbox(ctx context.Context, t gungnir.Task, i int, r *Run) error {
+	if t.Sandbox == nil {
+		return errors.New("a run action needs a sandbox, and the task has none")
+	}
+	var out bytes.Buffer
+	res, err := t.Sandbox.Run(ctx, gungnir.Cmd{Argv: r.Argv, Stdout: &out, Stderr: &out})
+	if t.TranscriptDir != "" {
+		name := filepath.Join(t.TranscriptDir, fmt.Sprintf("%s-%d-run-%d.log", t.Node, t.Attempt, i+1))
+		if werr := os.WriteFile(name, out.Bytes(), 0o644); werr != nil && err == nil {
+			err = werr
+		}
+	}
+	switch {
+	case err != nil:
+		return err
+	case res.ExitCode != 0 && !r.AllowFailure:
+		return fmt.Errorf("%v exited %d", r.Argv, res.ExitCode)
+	}
+	return nil
 }
 
 func apply(root *os.Root, act Action) error {

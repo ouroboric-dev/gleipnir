@@ -1,0 +1,6 @@
+{
+  "allowManagedHooksOnly": true,
+  "allowManagedMcpServersOnly": true,
+  "allowedMcpServers": [],
+  "disableBypassPermissionsMode": "disable"
+}
