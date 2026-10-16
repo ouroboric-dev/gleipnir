@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -18,8 +19,19 @@ import (
 const Root = "/u"
 
 // Home is the agent's HOME inside the work container: an empty, writable folder of the image, never
-// anything from the host.
+// anything from the host. The driver empties it before every command, and the XDG folders are set
+// inside it, so they are emptied with it.
 const Home = "/home/ygg"
+
+// homeEnv is the work container's environment: HOME, and the XDG folders inside it whatever the
+// stack image sets.
+var homeEnv = map[string]string{
+	"HOME":            Home,
+	"XDG_CONFIG_HOME": Home + "/.config",
+	"XDG_CACHE_HOME":  Home + "/.cache",
+	"XDG_DATA_HOME":   Home + "/.local/share",
+	"XDG_STATE_HOME":  Home + "/.local/state",
+}
 
 // Label names the labels every container carries, so doctor finds leftovers.
 const (
@@ -158,7 +170,7 @@ func render(dir string, spec gungnir.SandboxSpec, c Config) (map[string][]byte, 
 			User: fmt.Sprintf("%d:%d", c.UID, c.GID), UsernsMode: "keep-id",
 			CapDrop: []string{"ALL"}, SecurityOpt: []string{"no-new-privileges:true"},
 			NetworkMode: "service:fw", DependsOn: []string{"fw"},
-			Environment: map[string]string{"HOME": Home}, Labels: labels,
+			Environment: maps.Clone(homeEnv), Labels: labels,
 			Volumes: []string{
 				leaf + ":" + Root + "/" + l.Leaf + ":Z",
 				git + ":" + Root + "/" + l.GitDir + ":ro,Z",

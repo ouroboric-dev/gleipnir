@@ -40,6 +40,7 @@ case "$1" in
       *"test -f /run/ygg-fw/ready"*) exit "${STUB_READY_EXIT:-0}" ;;
       *"/dev/tcp/1.1.1.1/443"*) exit "${STUB_PROBE_EXIT:-124}" ;;
       *"kill -KILL -1"*) exit "${STUB_KILL_EXIT:-0}" ;;
+      *"find /home/ygg"*) exit "${STUB_HOME_EXIT:-0}" ;;
     esac
     [ -z "$STUB_EXEC_SLEEP" ] || exec sleep "$STUB_EXEC_SLEEP"
     echo "ran $*"; exit "${STUB_EXEC_EXIT:-0}" ;;
@@ -219,6 +220,46 @@ func TestNothingACommandStartedSurvivesItsExec(t *testing.T) {
 	t.Setenv("STUB_KILL_EXIT", "1")
 	if _, err := d.Exec(context.Background(), env, gungnir.Cmd{Argv: []string{"go", "test"}}); err == nil {
 		t.Error("Exec() succeeded though processes it started may still run")
+	}
+}
+
+// Each command finds HOME, and the XDG folders inside it, empty: nothing one command (or one agent
+// session) writes there shapes the next, or the secret scan (decision 4).
+func TestEachCommandStartsWithAnEmptyHome(t *testing.T) {
+	d, log, sp := fakeEngine(t)
+	env, err := d.Up(context.Background(), sp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	compose, _ := os.ReadFile(filepath.Join(d.work, "repos-app", "compose.yaml"))
+	for _, kv := range []string{"HOME: /home/ygg", "XDG_CONFIG_HOME: /home/ygg/.config", "XDG_CACHE_HOME: /home/ygg/.cache",
+		"XDG_DATA_HOME: /home/ygg/.local/share", "XDG_STATE_HOME: /home/ygg/.local/state"} {
+		if !strings.Contains(string(compose), kv) {
+			t.Errorf("the work container's environment lacks %s, so a stack image could put that folder outside HOME:\n%s", kv, compose)
+		}
+	}
+	empty := "exec work123 sh -c " + homeScript
+	upped := strings.Count(logOf(t, log), empty) // Up's own check of the network is a command too
+	for i := 0; i < 2; i++ {
+		if _, err := d.Exec(context.Background(), env, gungnir.Cmd{Argv: []string{"go", "test"}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got := logOf(t, log)
+	if n := strings.Count(got, empty) - upped; n != 2 {
+		t.Errorf("HOME was emptied %d times for two commands:\n%s", n, got)
+	}
+	if last := strings.LastIndex(got, "-w /u/repos/app work123 go test"); last < strings.LastIndex(got, empty) {
+		t.Errorf("HOME was emptied after the command, not before it:\n%s", got)
+	}
+	// A HOME that can't be emptied runs nothing.
+	t.Setenv("STUB_HOME_EXIT", "1")
+	before := strings.Count(logOf(t, log), "work123 go test")
+	if _, err := d.Exec(context.Background(), env, gungnir.Cmd{Argv: []string{"go", "test"}}); err == nil {
+		t.Error("Exec() ran a command though HOME could not be emptied")
+	}
+	if strings.Count(logOf(t, log), "work123 go test") != before {
+		t.Error("the command ran with what an earlier command left in HOME")
 	}
 }
 

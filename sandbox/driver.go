@@ -186,8 +186,8 @@ func (d *Driver) proveClosed(ctx context.Context, env gungnir.Env, project strin
 	return nil
 }
 
-// Exec runs cmd in the work container. Values in cmd.Env travel in the podman process's own
-// environment, never on a command line. When the command ends, or ctx does, Exec kills every
+// Exec runs cmd in the work container, with HOME emptied first. Values in cmd.Env travel in the
+// podman process's own environment, never on a command line. When the command ends, or ctx does, Exec kills every
 // process left in the container but its first, so nothing the command started outlives it: no
 // background process writes to the leaf while Odin checks, scans and commits it. A kill that can't
 // show the container clear is an error.
@@ -209,6 +209,9 @@ func (d *Driver) Exec(ctx context.Context, env gungnir.Env, c gungnir.Cmd) (gung
 		cmdEnv = append(cmdEnv, k+"="+c.Env[k])
 	}
 	args = append(append(args, env.Container), c.Argv...)
+	if err := d.emptyHome(ctx, env); err != nil {
+		return gungnir.ExecResult{}, fmt.Errorf("emptying HOME in the sandbox before %s: %w", c.Argv[0], err)
+	}
 	cmd := exec.CommandContext(ctx, d.Podman, args...)
 	cmd.Env = cmdEnv
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = c.Stdin, c.Stdout, c.Stderr
@@ -250,6 +253,18 @@ func (d *Driver) killAll(env gungnir.Env) error {
 	_, err := d.run(ctx, d.Podman, "exec", env.Container, "sh", "-c", killScript)
 	return err
 }
+
+// emptyHome empties the work container's HOME, which holds the XDG folders too, before a command:
+// what one command or agent session wrote there never shapes the next (decision 4). It runs as the
+// operator, who owns everything in HOME.
+func (d *Driver) emptyHome(ctx context.Context, env gungnir.Env) error {
+	_, err := d.run(ctx, d.Podman, "exec", env.Container, "sh", "-c", homeScript)
+	return err
+}
+
+// homeScript makes every folder in HOME searchable and writable, so none can keep its files, removes
+// everything below HOME without following a link, and exits 1 unless HOME is then empty.
+const homeScript = "cd / && find " + Home + ` -mindepth 1 -type d ! -perm -u=rwx -exec chmod u+rwx {} \; ; find ` + Home + ` -mindepth 1 -delete; [ -z "$(find ` + Home + ` -mindepth 1 -print -quit)" ]`
 
 // killScript kills what runs in the container, as above, and exits 1 when a live process is left
 // after ten rounds.
