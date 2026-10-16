@@ -18,6 +18,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"github.com/ouroboric-dev/gleipnir/bounded"
 	"github.com/ouroboric-dev/gleipnir/failure"
 	"github.com/ouroboric-dev/gungnir"
 )
@@ -25,6 +26,11 @@ import (
 // KeyVar is the one credential the adapter passes: a dedicated OpenRouter key with a hard credit
 // limit (spec §6.3).
 const KeyVar = "OPENROUTER_API_KEY"
+
+// maxStream is the most bytes of a session's output the adapter keeps in memory, and the most it
+// writes to the transcript. A chatty session is an agent failure, not a host that runs out of memory
+// (backlog B-021). A variable so a test can lower it.
+var maxStream = 32 << 20
 
 // Hosts are what the sandbox's firewall must open for a session.
 var Hosts = []string{"openrouter.ai"}
@@ -153,9 +159,12 @@ func (a *Agent) Run(ctx context.Context, t gungnir.Task) (gungnir.Result, error)
 	}
 	defer closeT()
 	version := a.version(ctx, t, env)
-	var out, errOut bytes.Buffer
+	out, errOut := bounded.NewBuffer(maxStream), bounded.NewBuffer(maxStream)
+	tw := bounded.NewWriter(transcript, int64(maxStream))
 	res, err := t.Sandbox.Run(ctx, gungnir.Cmd{Argv: Args(t, a.model), Env: env, Stdin: strings.NewReader(t.Prompt),
-		Stdout: io.MultiWriter(&out, transcript), Stderr: &errOut})
+		Stdout: io.MultiWriter(out, tw), Stderr: errOut})
+	// The steps that finished before the session ended were spent, whatever way it ended (backlog B-020).
+	_, spent, _, _ := a.parse(bytes.NewReader(out.Bytes()), 0)
 	if err != nil {
 		// A session the timeout or the operator ended is the agent's; any other failure to run the
 		// command is the sandbox's (spec §12).
@@ -163,18 +172,22 @@ func (a *Agent) Run(ctx context.Context, t gungnir.Task) (gungnir.Result, error)
 		if ctx.Err() != nil {
 			kind = gungnir.FailureAgent
 		}
-		return gungnir.Result{}, &gungnir.SessionError{Kind: kind, Err: fmt.Errorf("opencode: %w", err)}
+		return gungnir.Result{}, &gungnir.SessionError{Kind: kind, Err: fmt.Errorf("opencode: %w", err), Usage: spent}
 	}
-	r, used, seen, err := a.parse(&out, res.ExitCode)
+	if out.Truncated() || tw.Truncated() {
+		return gungnir.Result{}, &gungnir.SessionError{Kind: gungnir.FailureAgent, Usage: spent,
+			Err: fmt.Errorf("opencode: the session wrote more than %d MiB of output", maxStream>>20)}
+	}
+	r, used, seen, err := a.parse(bytes.NewReader(out.Bytes()), res.ExitCode)
 	if err != nil {
 		kind := gungnir.FailureAgent
-		if k := failure.Classify(0, errOut.String()); k == gungnir.FailureQuota {
+		if k := failure.Classify(0, string(errOut.Bytes())); k == gungnir.FailureQuota {
 			kind = k
 		} else if !seen && res.ExitCode != 0 {
 			kind = gungnir.FailureTransient // the tool crashed before it printed an event (spec §12)
 		}
 		return gungnir.Result{}, &gungnir.SessionError{Kind: kind, Usage: used,
-			Err: fmt.Errorf("opencode: %w (exit %d; stderr: %s)", err, res.ExitCode, tail(errOut.String()))}
+			Err: fmt.Errorf("opencode: %w (exit %d; stderr: %s)", err, res.ExitCode, tail(string(errOut.Bytes())))}
 	}
 	r.TranscriptPath, r.Provider, r.CLIVersion = transcriptPath(t), "openrouter", version
 	return r, nil

@@ -308,3 +308,36 @@ func TestACommandThatCouldNotRunIsTheSandboxsFailure(t *testing.T) {
 		t.Errorf("a session the context ended: Run() = %v (kind %q), want an agent failure", err, gungnir.FailureOf(err))
 	}
 }
+
+// Backlog B-020: a session the timeout killed still spent the steps that finished.
+func TestATimedOutSessionStillCountsItsUsage(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	cut := fixture(t, "success.jsonl") + `{"type":"step_start","part":{"type":"step-start"}}` + "\n" + `{"type":"text","part":{"type":"text","text":"half a th`
+	f := &fake{stdout: map[string]string{"run": cut}, err: ctx.Err()}
+	_, err := newAgent(t, "standard", nil).Run(ctx, task(f, t))
+	var se *gungnir.SessionError
+	if !errors.As(err, &se) || se.Kind != gungnir.FailureAgent {
+		t.Fatalf("Run() = %v, want an agent failure", err)
+	}
+	want := gungnir.Usage{InTok: 7, OutTok: 5, CacheTok: 80, Turns: 1, CostUSD: 0.00001005, CostEstimated: true}
+	if se.Usage != want {
+		t.Errorf("usage = %+v, want %+v", se.Usage, want)
+	}
+}
+
+// Backlog B-021: a chatty session is stopped by the bound, and the host never holds it all.
+func TestSessionOutputIsBounded(t *testing.T) {
+	old := maxStream
+	maxStream = 300
+	defer func() { maxStream = old }()
+	f := &fake{stdout: map[string]string{"run": fixture(t, "success.jsonl") + strings.Repeat("noise\n", 200)}}
+	tk := task(f, t)
+	_, err := newAgent(t, "standard", nil).Run(context.Background(), tk)
+	if err == nil || gungnir.FailureOf(err) != gungnir.FailureAgent || !strings.Contains(err.Error(), "more than") {
+		t.Fatalf("Run() = %v; want an agent failure that says the output was too long", err)
+	}
+	if fi, err := os.Stat(tk.TranscriptDir + "/review-1.jsonl"); err != nil || fi.Size() > 300 {
+		t.Errorf("the transcript = %v, %v; want at most 300 bytes", fi, err)
+	}
+}
