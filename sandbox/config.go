@@ -102,29 +102,46 @@ type service struct {
 // can reach them or change them (spec §6.2). Generate doesn't check its own output; Up does, before
 // every start (see Validate).
 func Generate(dir string, spec gungnir.SandboxSpec, c Config) (Generated, error) {
-	if err := spec.Validate(); err != nil {
+	files, g, err := render(dir, spec, c)
+	if err != nil {
 		return Generated{}, err
 	}
+	if err := os.MkdirAll(filepath.Join(dir, "fw"), 0o755); err != nil {
+		return Generated{}, err
+	}
+	for path, body := range files {
+		if err := os.WriteFile(path, body, 0o644); err != nil {
+			return Generated{}, err
+		}
+	}
+	return g, nil
+}
+
+// render returns the files of a sandbox configuration in dir, by path, without writing them.
+func render(dir string, spec gungnir.SandboxSpec, c Config) (map[string][]byte, Generated, error) {
+	if err := spec.Validate(); err != nil {
+		return nil, Generated{}, err
+	}
 	if c.Images.Work == "" || c.Images.Firewall == "" || c.UID <= 0 || c.GID <= 0 {
-		return Generated{}, errors.New("the driver needs both images and a non-root uid and gid")
+		return nil, Generated{}, errors.New("the driver needs both images and a non-root uid and gid")
 	}
 	for _, p := range []string{dir} {
 		if rel, err := filepath.Rel(spec.Leaf, p); err == nil && filepath.IsLocal(rel) {
-			return Generated{}, fmt.Errorf("the configuration folder %s is inside the leaf %s", dir, spec.Leaf)
+			return nil, Generated{}, fmt.Errorf("the configuration folder %s is inside the leaf %s", dir, spec.Leaf)
 		}
 	}
 	leaf, err := c.MapPath(spec.Leaf)
 	if err != nil {
-		return Generated{}, err
+		return nil, Generated{}, err
 	}
 	git, err := c.MapPath(spec.GitDir)
 	if err != nil {
-		return Generated{}, err
+		return nil, Generated{}, err
 	}
 	fwDir := filepath.Join(dir, "fw")
 	fwEngine, err := c.MapPath(fwDir)
 	if err != nil {
-		return Generated{}, err
+		return nil, Generated{}, err
 	}
 	l := spec.Layout()
 	labels := map[string]string{LabelRun: spec.Run, LabelLeaf: spec.Name}
@@ -151,29 +168,21 @@ func Generate(dir string, spec gungnir.SandboxSpec, c Config) (Generated, error)
 		"name": Project(spec), "dockerComposeFile": "compose.yaml", "service": "work",
 		"workspaceFolder": Root + "/" + l.Leaf, "updateRemoteUserUID": false, "shutdownAction": "stopCompose",
 	}
-	if err := os.MkdirAll(fwDir, 0o755); err != nil {
-		return Generated{}, err
-	}
 	g := Generated{Dir: dir, Compose: filepath.Join(dir, "compose.yaml"), Devcontainer: filepath.Join(dir, "devcontainer.json"), Hosts: filepath.Join(fwDir, "hosts")}
 	composeYAML, err := yaml.Marshal(cf)
 	if err != nil {
-		return Generated{}, err
+		return nil, Generated{}, err
 	}
 	dcJSON, err := json.MarshalIndent(dc, "", "  ")
 	if err != nil {
-		return Generated{}, err
+		return nil, Generated{}, err
 	}
 	hosts := strings.Join(spec.Egress, "\n")
 	if hosts != "" {
 		hosts += "\n"
 	}
-	for path, body := range map[string][]byte{
+	return map[string][]byte{
 		g.Compose: composeYAML, g.Devcontainer: append(dcJSON, '\n'), g.Hosts: []byte(hosts),
 		filepath.Join(fwDir, "egress.sh"): []byte(EgressScript),
-	} {
-		if err := os.WriteFile(path, body, 0o644); err != nil {
-			return Generated{}, err
-		}
-	}
-	return g, nil
+	}, g, nil
 }
