@@ -212,3 +212,35 @@ func TestNewRefusesAnEngineThatIsNotASocket(t *testing.T) {
 		t.Error("a network engine was accepted")
 	}
 }
+
+func TestLeftoversAreFoundByLabelAndStopped(t *testing.T) {
+	d, log, _ := fakeEngine(t)
+	// A podman that answers the list; the generic stub's ps prints ids, so this test brings its own.
+	list := filepath.Join(t.TempDir(), "podman")
+	os.WriteFile(list, []byte(`#!/bin/sh
+echo "podman $*" >> "$STUB_LOG"
+case "$1" in
+  ps)
+    case "$*" in
+      *--format*) cat <<'JSON'
+[{"Id":"bbb","State":"running","Labels":{"dev.ouroboric.ygg.run":"20261016-101500-a1b2c3","dev.ouroboric.ygg.leaf":"repos/app","com.docker.compose.project":"ygg-p1"}},
+ {"Id":"aaa","State":"exited","Labels":{"dev.ouroboric.ygg.run":"20261015-090000-ffffff","dev.ouroboric.ygg.leaf":"repos/api","com.docker.compose.project":"ygg-p0"}}]
+JSON
+      ;;
+      *) echo aaa ;;
+    esac ;;
+esac
+exit 0
+`), 0o755)
+	d.Podman = list
+	ls, err := d.Leftovers(context.Background())
+	if err != nil || len(ls) != 2 || ls[0].Run != "20261015-090000-ffffff" || ls[0].Container != "aaa" || ls[1].Leaf != "repos/app" || ls[1].Project != "ygg-p1" {
+		t.Fatalf("Leftovers() = %+v, %v; want two, oldest run first", ls, err)
+	}
+	if err := d.StopLeftover(context.Background(), ls[1]); err != nil {
+		t.Fatal(err)
+	}
+	if got := logOf(t, log); !strings.Contains(got, "label=com.docker.compose.project=ygg-p1") || !strings.Contains(got, "podman rm -f -t 2 --depend aaa") {
+		t.Errorf("StopLeftover didn't remove the project's containers:\n%s", got)
+	}
+}
