@@ -84,6 +84,7 @@ type composeFile struct {
 
 type service struct {
 	Image       string            `yaml:"image"`
+	PullPolicy  string            `yaml:"pull_policy"` // never: images are built or pulled beforehand, with the isolated auth
 	Command     []string          `yaml:"command"`
 	User        string            `yaml:"user,omitempty"`
 	UsernsMode  string            `yaml:"userns_mode"`
@@ -147,13 +148,13 @@ func render(dir string, spec gungnir.SandboxSpec, c Config) (map[string][]byte, 
 	labels := map[string]string{LabelRun: spec.Run, LabelLeaf: spec.Name}
 	cf := composeFile{Name: Project(spec), Services: map[string]service{
 		"fw": {
-			Image: c.Images.Firewall, Command: []string{"sh", "/etc/ygg-fw/egress.sh", "/etc/ygg-fw/hosts"},
+			Image: c.Images.Firewall, PullPolicy: "never", Command: []string{"sh", "/etc/ygg-fw/egress.sh", "/etc/ygg-fw/hosts"},
 			// root of its own user namespace: keep-id alone would run it as the operator, who can't write rules
 			User: "0:0", UsernsMode: "keep-id", CapAdd: []string{"NET_ADMIN"}, Labels: labels,
 			Volumes: []string{fwEngine + ":/etc/ygg-fw:ro,Z"},
 		},
 		"work": {
-			Image: c.Images.Work, Command: []string{"sleep", "infinity"},
+			Image: c.Images.Work, PullPolicy: "never", Command: []string{"sleep", "infinity"},
 			User: fmt.Sprintf("%d:%d", c.UID, c.GID), UsernsMode: "keep-id",
 			CapDrop: []string{"ALL"}, SecurityOpt: []string{"no-new-privileges:true"},
 			NetworkMode: "service:fw", DependsOn: []string{"fw"},

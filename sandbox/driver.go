@@ -3,6 +3,7 @@ package sandbox
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -31,6 +32,8 @@ type Driver struct {
 	// beforeUp lets a test change the configuration after Generate, to show Validate runs before the start.
 	beforeUp func(Generated)
 }
+
+var _ gungnir.Sandbox = (*Driver)(nil)
 
 // ErrNoImage means a sandbox image is missing: build the images first (ygg sandbox build).
 var ErrNoImage = errors.New("a sandbox image is missing")
@@ -77,6 +80,159 @@ func (d *Driver) run(ctx context.Context, name string, args ...string) ([]byte, 
 		return out.Bytes(), fmt.Errorf("%s %s: %w: %s", filepath.Base(name), strings.Join(args, " "), err, strings.TrimSpace(errOut.String()))
 	}
 	return out.Bytes(), nil
+}
+
+// Up starts the sandbox of spec: it writes the configuration, checks it against the hardening
+// rules, checks that the images exist, starts the containers, waits until the firewall holds, and
+// proves from inside that the network is closed. A sandbox that can't prove it is stopped.
+func (d *Driver) Up(ctx context.Context, spec gungnir.SandboxSpec) (gungnir.Env, error) {
+	if err := spec.Validate(); err != nil {
+		return gungnir.Env{}, err
+	}
+	g, err := Generate(filepath.Join(d.work, strings.ReplaceAll(spec.Name, "/", "-")), spec, d.cfg)
+	if err != nil {
+		return gungnir.Env{}, err
+	}
+	if d.beforeUp != nil {
+		d.beforeUp(g)
+	}
+	if err := Validate(g, spec, d.cfg); err != nil {
+		return gungnir.Env{}, err
+	}
+	for _, img := range []string{d.cfg.Images.Work, d.cfg.Images.Firewall} {
+		if _, err := d.run(ctx, d.Podman, "image", "exists", img); err != nil {
+			return gungnir.Env{}, fmt.Errorf("%w: %s (run ygg sandbox build)", ErrNoImage, img)
+		}
+	}
+	project := Project(spec)
+	env := gungnir.Env{Name: spec.Name, Project: project, Workdir: Root + "/" + spec.Layout().Leaf}
+	out, err := d.run(ctx, d.Devcontainer, "up", "--docker-path", d.Podman, "--docker-compose-path", d.Compose,
+		"--workspace-folder", spec.Leaf, "--config", g.Devcontainer, "--user-data-folder", filepath.Join(g.Dir, "data"),
+		"--skip-post-create", "--default-user-env-probe", "none", "--mount-workspace-git-root=false", "--log-format", "json")
+	if err != nil {
+		d.Down(context.WithoutCancel(ctx), env)
+		return gungnir.Env{}, err
+	}
+	if env.Container, err = containerID(out); err != nil {
+		d.Down(context.WithoutCancel(ctx), env)
+		return gungnir.Env{}, err
+	}
+	if err := d.proveClosed(ctx, env, project); err != nil {
+		d.Down(context.WithoutCancel(ctx), env)
+		return gungnir.Env{}, err
+	}
+	return env, nil
+}
+
+// containerID reads the result line of devcontainer up: its last line that is a JSON object with an
+// outcome.
+func containerID(out []byte) (string, error) {
+	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		var r struct {
+			Outcome     string `json:"outcome"`
+			ContainerID string `json:"containerId"`
+			Message     string `json:"message"`
+		}
+		if json.Unmarshal([]byte(lines[i]), &r) != nil || r.Outcome == "" {
+			continue
+		}
+		if r.Outcome != "success" || r.ContainerID == "" {
+			return "", fmt.Errorf("devcontainer up: %s %s", r.Outcome, r.Message)
+		}
+		return r.ContainerID, nil
+	}
+	return "", errors.New("devcontainer up gave no result")
+}
+
+// proveClosed waits for the firewall sidecar to say it holds, then tries from the work container to
+// reach the open internet. If it connects, or the check can't run, the sandbox is refused.
+func (d *Driver) proveClosed(ctx context.Context, env gungnir.Env, project string) error {
+	fw, err := d.run(ctx, d.Podman, "ps", "-q", "--filter", "label=com.docker.compose.project="+project, "--filter", "label=com.docker.compose.service=fw")
+	id := strings.TrimSpace(string(fw))
+	if err != nil || id == "" || strings.Contains(id, "\n") {
+		return fmt.Errorf("the firewall container of %s was not found: %v", project, err)
+	}
+	deadline := time.Now().Add(d.ReadyTimeout)
+	for {
+		if _, err := d.run(ctx, d.Podman, "exec", id, "test", "-f", "/run/ygg-fw/ready"); err == nil {
+			break
+		}
+		if time.Now().After(deadline) || ctx.Err() != nil {
+			return fmt.Errorf("the firewall of %s did not come up in %s", project, d.ReadyTimeout)
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	// 1.1.1.1:443 is reachable from an open network, and no sandbox lists it: a connect that succeeds
+	// means the firewall isn't in the path. Dropped packets time out after three seconds.
+	res, err := d.Exec(ctx, env, gungnir.Cmd{Argv: []string{"timeout", "3", "bash", "-c", "exec 3<>/dev/tcp/1.1.1.1/443"}})
+	switch {
+	case err != nil:
+		return fmt.Errorf("the closed-network check couldn't run: %w", err)
+	case res.ExitCode == 0:
+		return errors.New("the sandbox reached 1.1.1.1:443, so the firewall isn't closing it")
+	case res.ExitCode == 126 || res.ExitCode == 127:
+		return errors.New("the closed-network check needs bash and timeout in the stack image")
+	}
+	return nil
+}
+
+// Exec runs cmd in the work container. Values in cmd.Env travel in the podman process's own
+// environment, never on a command line. When ctx ends, Exec stops the command, and kills what it
+// started in the container, which podman exec's client leaving would not.
+func (d *Driver) Exec(ctx context.Context, env gungnir.Env, c gungnir.Cmd) (gungnir.ExecResult, error) {
+	if err := c.Validate(); err != nil {
+		return gungnir.ExecResult{}, err
+	}
+	if env.Container == "" {
+		return gungnir.ExecResult{}, errors.New("no sandbox container to run in")
+	}
+	dir := env.Workdir
+	if c.Dir != "" {
+		dir = env.Workdir + "/" + filepath.ToSlash(c.Dir)
+	}
+	args := []string{"exec", "-i", "-w", dir}
+	cmdEnv := d.Env()
+	for _, k := range sortedEnv(c.Env) {
+		args = append(args, "-e", k)
+		cmdEnv = append(cmdEnv, k+"="+c.Env[k])
+	}
+	args = append(append(args, env.Container), c.Argv...)
+	cmd := exec.CommandContext(ctx, d.Podman, args...)
+	cmd.Env = cmdEnv
+	cmd.Stdin, cmd.Stdout, cmd.Stderr = c.Stdin, c.Stdout, c.Stderr
+	cmd.WaitDelay = 5 * time.Second
+	err := cmd.Run()
+	if ctx.Err() != nil {
+		d.killAll(env)
+		return gungnir.ExecResult{}, ctx.Err()
+	}
+	var ee *exec.ExitError
+	if errors.As(err, &ee) {
+		return gungnir.ExecResult{ExitCode: ee.ExitCode()}, nil
+	}
+	return gungnir.ExecResult{}, err
+}
+
+func sortedEnv(m map[string]string) []string {
+	ks := make([]string, 0, len(m))
+	for k := range m {
+		ks = append(ks, k)
+	}
+	for i := range ks { // small maps: insertion sort keeps this file free of another import
+		for j := i; j > 0 && ks[j] < ks[j-1]; j-- {
+			ks[j], ks[j-1] = ks[j-1], ks[j]
+		}
+	}
+	return ks
+}
+
+// killAll kills every process of the agent's user in the work container, which the container's
+// first process survives. It is for a command that outlived its client.
+func (d *Driver) killAll(env gungnir.Env) {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	d.run(ctx, d.Podman, "exec", env.Container, "sh", "-c", "kill -KILL -1")
 }
 
 // Down removes the sandbox's containers and network. It finds them by label, so it works for a
