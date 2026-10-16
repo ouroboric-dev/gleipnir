@@ -1,16 +1,34 @@
 #!/bin/bash
 # scan.sh: look for secrets in what a checkpoint would commit (spec §14). Run in the leaf's sandbox, in
-# the leaf's top folder. It copies the files git would add (changed and new, apart from the ones
-# .gitignore names) to a scratch folder, and runs gitleaks over them with every match redacted. Exit
-# 0: nothing found. Exit 7: secrets found, as a JSON report on standard output. Anything else: the scan
-# itself failed, which counts as a failure to scan and never as a clean tree.
+# the leaf's top folder, by an absolute bash. Standard input is the files the checkpoint would commit,
+# NUL-separated, as Odin's host git lists them: nothing in the sandbox picks them. Each is copied to
+# t/ in a scratch folder, a symlink as the name it points at (what git commits), and gitleaks, from
+# its pinned path, scans the scratch folder with the factory's own config and no ignore file, every
+# match redacted. Nothing in the tree can be gitleaks's config or ignore file: the tree sits below
+# the folder gitleaks scans. Exit 0: nothing found. Exit 7: secrets found, as a JSON report on
+# standard output. Anything else: the scan itself failed, which never counts as a clean tree.
 set -euo pipefail
+export PATH=/usr/bin:/bin # not the sandbox's PATH, where a command may have left tools of its own
+unset GITLEAKS_CONFIG GITLEAKS_CONFIG_TOML
+gitleaks='@GITLEAKS@'
 d="$(mktemp -d)"
-trap 'rm -rf "$d"' EXIT
+trap 'rm -rf -- "$d"' EXIT
+mkdir -- "$d/cfg" "$d/cfg/ignore" "$d/src" "$d/src/t"
+cat > "$d/cfg/gitleaks.toml" <<'TOML'
+@CONFIG@TOML
 while IFS= read -r -d '' f; do
-  if [ -f "$f" ] && [ ! -L "$f" ]; then
-    cp --parents -- "$f" "$d"
-  fi
-done < <(git ls-files -z --modified --others --exclude-standard)
-cd "$d" # so the report names files by their path in the leaf, not in a scratch folder
-gitleaks dir --no-banner --redact --exit-code 7 --report-format json --report-path /dev/stdout .
+  case "$f" in
+    '' | /* | .. | ../* | */.. | */../*) echo "scan.sh: $f is not a path in the leaf" >&2; exit 2 ;;
+  esac
+  if [ -L "$f" ]; then
+    mkdir -p -- "$d/src/t/$(dirname -- "$f")"
+    readlink -- "$f" > "$d/src/t/$f"
+  elif [ -f "$f" ]; then
+    cp --parents -- "$f" "$d/src/t"
+  elif [ -e "$f" ]; then
+    echo "scan.sh: $f is neither a file nor a symlink" >&2; exit 2
+  fi # gone: a deletion, which commits no content
+done
+cd "$d/src"
+"$gitleaks" dir --no-banner --redact --exit-code 7 --config "$d/cfg/gitleaks.toml" --gitleaks-ignore-path "$d/cfg/ignore" \
+  --report-format json --report-path /dev/stdout .

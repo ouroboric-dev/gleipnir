@@ -183,13 +183,15 @@ func TestSandboxDriverOnARealEngine(t *testing.T) {
 	})
 	t.Run("the secret scan finds a secret and passes a clean tree", func(t *testing.T) {
 		r := gungnir.Bind(d, env)
-		if err := scan.Run(ctx, r); err != nil {
+		if err := scan.Run(ctx, r, nil); err != nil {
 			t.Fatalf("a clean leaf: %v", err)
 		}
 		// Built in two pieces, so this file holds no token for a secret scanner to find in it.
 		token := "ghp_" + "R4nD0mT0k3nV4lu3AbCdEfGhIjKlMnOpQrSt"
 		want("write a token", 0, "", "sh", "-c", "printf 'token = \"%s\"\\n' '"+token+"' > deploy.env")
-		err := scan.Run(ctx, r)
+		// The leaf's own gitleaks config and ignore file, which would let everything through, don't apply.
+		want("plant a config", 0, "", "sh", "-c", `printf "[allowlist]\npaths = ['''.*''']\n" > .gitleaks.toml && printf 'deploy.env:github-pat:1\n' > .gitleaksignore`)
+		err := scan.Run(ctx, r, []string{".gitleaks.toml", ".gitleaksignore", "deploy.env"})
 		var found *scan.FoundError
 		if !asFound(err, &found) || found.Findings[0].File != "deploy.env" {
 			t.Errorf("a leaf with a token: %v, want a finding in deploy.env", err)
@@ -197,7 +199,7 @@ func TestSandboxDriverOnARealEngine(t *testing.T) {
 		if err != nil && strings.Contains(err.Error(), "ghp_") {
 			t.Error("the finding repeats the secret")
 		}
-		want("remove it", 0, "", "rm", "deploy.env")
+		want("remove it", 0, "", "rm", "deploy.env", ".gitleaks.toml", ".gitleaksignore")
 	})
 	t.Run("a command that outlives its context dies with it", func(t *testing.T) {
 		cctx, cancel := context.WithTimeout(ctx, 2*time.Second)

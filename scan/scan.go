@@ -15,10 +15,27 @@ import (
 )
 
 //go:embed scan.sh
-var script string
+var template string
 
-// Script is the scan, for tests that run it on the host with a stand-in for gitleaks.
-func Script() string { return script }
+// Gitleaks is where the sandbox image keeps the pinned gitleaks (assets/Containerfile in sandbox).
+// The scan runs it by this path, never from the sandbox's PATH.
+const Gitleaks = "/opt/ygg/bin/gitleaks"
+
+// pinnedConfig is the factory's gitleaks config: gitleaks's own default rules and nothing else. The
+// scan gives it by absolute path, so no config in the leaf applies.
+const pinnedConfig = `# The factory's gitleaks config: the default rules of the pinned gitleaks, with no allowlist.
+[extend]
+useDefault = true
+`
+
+// script is the scan with the gitleaks at path. Tests run it on the host with a stand-in.
+func script(gitleaks string) string {
+	return strings.NewReplacer("@GITLEAKS@", gitleaks, "@CONFIG@", pinnedConfig).Replace(template)
+}
+
+// Argv is the command the scan runs in the sandbox, by an absolute bash: a fake sandbox knows the
+// scan by it.
+func Argv() []string { return []string{"/bin/bash", "-c", script(Gitleaks)} }
 
 // Finding is one secret gitleaks found. It never holds the secret: the report is redacted.
 type Finding struct {
@@ -44,11 +61,18 @@ func (e *FoundError) Error() string {
 // for a failure of the tool.
 const exitFound = 7
 
-// Run scans the leaf behind r. A clean tree is nil. Secrets are a *FoundError. A scan that couldn't
-// run, or whose report can't be read, is an ordinary error: no answer is never "clean".
-func Run(ctx context.Context, r gungnir.Runner) error {
+// Run scans files, paths in the leaf behind r, which must be exactly what the checkpoint would
+// commit: the caller lists them with its own git, never the sandbox's. A clean tree is nil. Secrets
+// are a *FoundError. A scan that couldn't run, or whose report can't be read, is an ordinary error:
+// no answer is never "clean".
+func Run(ctx context.Context, r gungnir.Runner, files []string) error {
+	var list strings.Builder
+	for _, f := range files {
+		list.WriteString(f)
+		list.WriteByte(0)
+	}
 	var out, errOut bytes.Buffer
-	res, err := r.Run(ctx, gungnir.Cmd{Argv: []string{"bash", "-s"}, Stdin: strings.NewReader(script), Stdout: &out, Stderr: &errOut})
+	res, err := r.Run(ctx, gungnir.Cmd{Argv: Argv(), Stdin: strings.NewReader(list.String()), Stdout: &out, Stderr: &errOut})
 	if err != nil {
 		return fmt.Errorf("the secret scan couldn't run: %w", err)
 	}
@@ -75,7 +99,14 @@ func found(report []byte) error {
 	}
 	fe := &FoundError{}
 	for _, r := range rows {
-		fe.Findings = append(fe.Findings, Finding{Rule: r.RuleID, File: strings.TrimPrefix(r.File, "/"), Line: r.StartLine})
+		fe.Findings = append(fe.Findings, Finding{Rule: r.RuleID, File: leafPath(r.File), Line: r.StartLine})
 	}
 	return fe
+}
+
+// leafPath turns a path in gitleaks's report into the file's path in the leaf: the scan copies the
+// leaf's files to t/ in the folder gitleaks scans.
+func leafPath(p string) string {
+	p = strings.TrimPrefix(strings.TrimPrefix(p, "./"), "/")
+	return strings.TrimPrefix(p, "t/")
 }
