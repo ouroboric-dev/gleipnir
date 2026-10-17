@@ -1,6 +1,8 @@
 package sandbox
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -85,9 +87,18 @@ type Generated struct {
 // Project returns the compose project name of a sandbox: one per run and leaf. It is lower-case letters
 // and digits only, because the devcontainer CLI strips everything else from the name it gives the
 // engine, and Down finds containers by that name (found on a real engine, 2026-10-16).
+//
+// The name ends in a hash of the run and the leaf's path, because dropping punctuation alone makes
+// repos/web-app and repos/webapp one project, and one leaf's Down would stop the other's sandbox
+// (backlog B-015).
 func Project(s gungnir.SandboxSpec) string {
-	return "ygg" + regexp.MustCompile(`[^a-z0-9]`).ReplaceAllString(strings.ToLower(s.Run+s.Name), "")
+	sum := sha256.Sum256([]byte(s.Run + "\x00" + s.Name))
+	return "ygg" + regexp.MustCompile(`[^a-z0-9]`).ReplaceAllString(strings.ToLower(s.Run+s.Name), "") + hex.EncodeToString(sum[:4])
 }
+
+// ConfigDir returns the folder under work where the sandbox of spec keeps its configuration: its
+// project name, so no two sandboxes of a run share one.
+func ConfigDir(work string, s gungnir.SandboxSpec) string { return filepath.Join(work, Project(s)) }
 
 type composeFile struct {
 	Name     string             `yaml:"name"`

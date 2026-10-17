@@ -89,7 +89,7 @@ func TestUpUsesTheEngineAndAuthTheFactoryChose(t *testing.T) {
 	if !strings.Contains(got, "host="+socket) || !strings.Contains(got, "auth="+filepath.Join(d.work, "registry-auth", "auth.json")) {
 		t.Errorf("a call lacked the factory's engine or the isolated auth:\n%s", got)
 	}
-	for _, want := range []string{"devcontainer up --docker-path", "--skip-post-create", "--config " + filepath.Join(d.work, "repos-app", "devcontainer.json")} {
+	for _, want := range []string{"devcontainer up --docker-path", "--skip-post-create", "--config " + filepath.Join(ConfigDir(d.work, sp), "devcontainer.json")} {
 		if !strings.Contains(got, want) {
 			t.Errorf("the devcontainer call lacks %q:\n%s", want, got)
 		}
@@ -233,7 +233,7 @@ func TestEachCommandStartsWithAnEmptyHome(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	compose, _ := os.ReadFile(filepath.Join(d.work, "repos-app", "compose.yaml"))
+	compose, _ := os.ReadFile(filepath.Join(ConfigDir(d.work, sp), "compose.yaml"))
 	for _, kv := range []string{"HOME: /home/ygg", "XDG_CONFIG_HOME: /home/ygg/.config", "XDG_CACHE_HOME: /home/ygg/.cache",
 		"XDG_DATA_HOME: /home/ygg/.local/share", "XDG_STATE_HOME: /home/ygg/.local/state"} {
 		if !strings.Contains(string(compose), kv) {

@@ -68,7 +68,7 @@ func TestGenerateWritesTheMirroredHardenedConfig(t *testing.T) {
 		len(work.CapAdd) != 0 || work.CapDrop[0] != "ALL" || fw.CapAdd[0] != "NET_ADMIN" {
 		t.Errorf("work = %+v, fw = %+v; want keep-id on both, no added capability in work, and the firewall in its own sidecar", work, fw)
 	}
-	if cf.Name != "ygg20261016101500a1b2c3reposapp" || work.Labels[LabelRun] != "20261016-101500-a1b2c3" {
+	if !strings.HasPrefix(cf.Name, "ygg20261016101500a1b2c3reposapp") || len(cf.Name) != len("ygg20261016101500a1b2c3reposapp")+8 || work.Labels[LabelRun] != "20261016-101500-a1b2c3" {
 		t.Errorf("project %q, labels %v", cf.Name, work.Labels)
 	}
 	if fw.User != "0:0" {

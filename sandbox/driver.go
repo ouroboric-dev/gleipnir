@@ -97,7 +97,7 @@ func (d *Driver) Up(ctx context.Context, spec gungnir.SandboxSpec) (gungnir.Env,
 	if err := spec.Validate(); err != nil {
 		return gungnir.Env{}, err
 	}
-	g, err := Generate(filepath.Join(d.work, strings.ReplaceAll(spec.Name, "/", "-")), spec, d.cfg)
+	g, err := Generate(ConfigDir(d.work, spec), spec, d.cfg)
 	if err != nil {
 		return gungnir.Env{}, err
 	}
