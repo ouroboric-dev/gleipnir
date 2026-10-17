@@ -17,6 +17,11 @@ The harness: agent adapters, the devcontainer sandbox driver, policies and the c
 - Loads skills explicitly per task, from Havamal at a pinned version (spec §5.1).
 - Runs commands in sandboxes and applies policies: devcontainer hardening, managed settings and
   the egress firewall (spec §6).
+- Starts, beside the work container, the services a leaf's realm and the realms of the leaves it
+  consumes ask for (a database, object storage), and opens their ports, and only theirs, to the work
+  container through the firewall. Each sandbox starts on the stack layer its spec names, so leaves of
+  different realms differ. A scratch sandbox holds one folder and no git directory: a planner's
+  workspace (spec §3.3).
 - Runs checks.
 
 ## Depends on
