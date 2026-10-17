@@ -83,6 +83,7 @@ type Generated struct {
 	Compose      string
 	Devcontainer string
 	Hosts        string // the firewall's host list
+	Services     string // the firewall's list of service ports: "name port" lines
 }
 
 // Project returns the compose project name of a sandbox: one per run and leaf. It is lower-case letters
@@ -172,7 +173,7 @@ func render(dir string, spec gungnir.SandboxSpec, c Config) (map[string][]byte, 
 	labels := map[string]string{LabelRun: spec.Run, LabelLeaf: spec.Name}
 	cf := composeFile{Name: Project(spec), Services: map[string]service{
 		"fw": {
-			Image: c.Images.Firewall, PullPolicy: "never", Command: []string{"sh", "/etc/ygg-fw/egress.sh", "/etc/ygg-fw/hosts"},
+			Image: c.Images.Firewall, PullPolicy: "never", Command: []string{"sh", "/etc/ygg-fw/egress.sh", "/etc/ygg-fw/hosts", "/etc/ygg-fw/services"},
 			// root of its own user namespace: keep-id alone would run it as the operator, who can't write rules
 			User: "0:0", UsernsMode: "keep-id", CapAdd: []string{"NET_ADMIN"}, Labels: labels,
 			Volumes: []string{fwEngine + ":/etc/ygg-fw:ro,Z"},
@@ -207,7 +208,7 @@ func render(dir string, spec gungnir.SandboxSpec, c Config) (map[string][]byte, 
 		"name": Project(spec), "dockerComposeFile": "compose.yaml", "service": "work",
 		"workspaceFolder": Root + "/" + l.Leaf, "updateRemoteUserUID": false, "shutdownAction": "stopCompose",
 	}
-	g := Generated{Dir: dir, Compose: filepath.Join(dir, "compose.yaml"), Devcontainer: filepath.Join(dir, "devcontainer.json"), Hosts: filepath.Join(fwDir, "hosts")}
+	g := Generated{Dir: dir, Compose: filepath.Join(dir, "compose.yaml"), Devcontainer: filepath.Join(dir, "devcontainer.json"), Hosts: filepath.Join(fwDir, "hosts"), Services: filepath.Join(fwDir, "services")}
 	composeYAML, err := yaml.Marshal(cf)
 	if err != nil {
 		return nil, Generated{}, err
@@ -220,8 +221,14 @@ func render(dir string, spec gungnir.SandboxSpec, c Config) (map[string][]byte, 
 	if hosts != "" {
 		hosts += "\n"
 	}
+	var ports strings.Builder
+	for _, v := range slices.SortedFunc(slices.Values(spec.Services), func(a, b gungnir.Service) int { return strings.Compare(a.Name, b.Name) }) {
+		for _, p := range v.Ports {
+			fmt.Fprintf(&ports, "%s %d\n", v.Name, p)
+		}
+	}
 	return map[string][]byte{
-		g.Compose: composeYAML, g.Devcontainer: append(dcJSON, '\n'), g.Hosts: []byte(hosts),
+		g.Compose: composeYAML, g.Devcontainer: append(dcJSON, '\n'), g.Hosts: []byte(hosts), g.Services: []byte(ports.String()),
 		filepath.Join(fwDir, "egress.sh"): []byte(EgressScript),
 	}, g, nil
 }

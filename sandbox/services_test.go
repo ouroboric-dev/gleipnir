@@ -108,3 +108,37 @@ func TestAServiceTheFactoryDidNotWriteIsRefusedBeforeItStarts(t *testing.T) {
 		t.Error("a service that takes a password was accepted")
 	}
 }
+
+func TestTheFirewallIsToldWhichServicePortsToOpen(t *testing.T) {
+	tmp := t.TempDir()
+	c := cfg()
+	c.Mounts = append(c.Mounts, PathMap{Host: tmp, Engine: "/mnt/wsl/cfg"})
+	sp := withServices()
+	sp.Services[0].Ports = []int{8333, 9333}
+	g, err := Generate(filepath.Join(tmp, "sandbox"), sp, c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if b, _ := os.ReadFile(g.Services); string(b) != "postgres 5432\nseaweedfs 8333\nseaweedfs 9333\n" {
+		t.Errorf("fw/services = %q; one line for each port of each service, by name", b)
+	}
+	var cf composeFile
+	raw, _ := os.ReadFile(g.Compose)
+	yaml.Unmarshal(raw, &cf)
+	if got := strings.Join(cf.Services["fw"].Command, " "); got != "sh /etc/ygg-fw/egress.sh /etc/ygg-fw/hosts /etc/ygg-fw/services" {
+		t.Errorf("fw command = %q", got)
+	}
+	// A port the agent adds to the file is a difference from what the factory generates.
+	os.WriteFile(g.Services, []byte("postgres 5432\nseaweedfs 8333\nseaweedfs 9333\nseaweedfs 22\n"), 0o644)
+	if err := Validate(g, sp, c); err == nil || !strings.Contains(err.Error(), "fw/services differs") {
+		t.Errorf("Validate() = %v after a port was added to fw/services", err)
+	}
+	noServices := spec("/home/ana/ygg/proj")
+	g2, err := Generate(filepath.Join(tmp, "plain"), noServices, c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if b, err := os.ReadFile(g2.Services); err != nil || len(b) != 0 {
+		t.Errorf("fw/services for a sandbox with no services = %q, %v; want an empty file", b, err)
+	}
+}

@@ -159,6 +159,7 @@ func differences(g Generated, spec gungnir.SandboxSpec, c Config) []string {
 		{"devcontainer.json", g.Devcontainer, parseJSON},
 		{"compose.yaml", g.Compose, parseYAML},
 		{"fw/hosts", g.Hosts, parseRaw},
+		{"fw/services", g.Services, parseRaw},
 		{"fw/egress.sh", filepath.Join(filepath.Dir(g.Hosts), "egress.sh"), parseRaw},
 	} {
 		got, err := readParsed(f.path, f.parse)

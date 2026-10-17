@@ -1,13 +1,18 @@
 #!/bin/sh
-# egress.sh HOSTS: the egress firewall of a leaf's sandbox (spec §6.2). It runs as root in the
+# egress.sh HOSTS [SERVICES]: the egress firewall of a leaf's sandbox (spec §6.2). It runs as root in the
 # firewall sidecar, which owns the network namespace the work container joins; the agent's container
 # has no capabilities, so it can't change a rule. Output, input and forwarding are dropped, except
-# loopback, replies, DNS to the resolver, and 443/tcp to the addresses of the hosts in HOSTS (one
-# name per line). Names are resolved to addresses, so the script resolves them again every
+# loopback, replies, DNS to the resolver, 443/tcp to the addresses of the hosts in HOSTS (one
+# name per line), and the listed ports of the services in SERVICES (one "name port" per line; the
+# containers beside the work container, such as a database). A service may still be starting, so a
+# name that does not resolve is tried again each second, up to YGG_SERVICE_WAIT times (default 30).
+# Names are resolved to addresses, so the script resolves them again every
 # YGG_REFRESH seconds (default 300) and swaps the rules in without a gap. Without a resolvable
 # host at the start it exits 1, so the sandbox never opens half closed.
 set -eu
-HOSTS="${1:?usage: egress.sh HOSTS}"
+HOSTS="${1:?usage: egress.sh HOSTS [SERVICES]}"
+SERVICES="${2:-}"
+WAIT="${YGG_SERVICE_WAIT:-30}"
 STATE="${YGG_FW_STATE:-/run/ygg-fw}"
 REFRESH="${YGG_REFRESH:-300}"
 mkdir -p "$STATE"
@@ -23,6 +28,24 @@ resolve() {
     [ -n "$found" ] || { echo "egress: $host does not resolve" >&2; return 1; }
     echo "$found"
   done < "$HOSTS"
+}
+
+# resolve_services prints "address port" for every port of every service, or fails on a service that
+# has no address after WAIT tries.
+resolve_services() {
+  [ -n "$SERVICES" ] && [ -s "$SERVICES" ] || return 0
+  while read -r name port; do
+    [ -n "$name" ] || continue
+    tries=0
+    while :; do
+      found="$(getent ahostsv4 "$name" | awk '{ print $1 }' | sort -u)"
+      [ -n "$found" ] && break
+      tries=$((tries + 1))
+      if [ "$tries" -ge "$WAIT" ]; then echo "egress: service $name does not resolve" >&2; return 1; fi
+      sleep 1
+    done
+    for ip in $found; do echo "$ip $port"; done
+  done < "$SERVICES"
 }
 
 base() {
@@ -43,12 +66,19 @@ base() {
 # apply swaps in a fresh chain of host rules: the new chain is reachable before the old one goes.
 apply() {
   addrs="$1"
+  svc="$2"
   old="$(cat "$STATE/chain" 2>/dev/null || true)"
   if [ "$old" = YGG_HOSTS_A ]; then new=YGG_HOSTS_B; else new=YGG_HOSTS_A; fi
   iptables -N "$new" 2>/dev/null || iptables -F "$new"
   for ip in $addrs; do
     iptables -A "$new" -p tcp -d "$ip" --dport 443 -j ACCEPT
   done
+  while read -r ip port; do
+    [ -n "$ip" ] || continue
+    iptables -A "$new" -p tcp -d "$ip" --dport "$port" -j ACCEPT
+  done <<EOF
+$svc
+EOF
   iptables -A OUTPUT -j "$new"
   if [ -n "$old" ]; then
     iptables -D OUTPUT -j "$old"
@@ -58,10 +88,11 @@ apply() {
 }
 
 addrs="$(resolve)"
+svcs="$(resolve_services)"
 base
-apply "$addrs"
+apply "$addrs" "$svcs"
 touch "$STATE/ready"
 [ "${YGG_ONCE:-}" = 1 ] && exit 0
 while sleep "$REFRESH"; do
-  if addrs="$(resolve)"; then apply "$addrs"; else echo "egress: keeping the earlier addresses" >&2; fi
+  if addrs="$(resolve)" && svcs="$(resolve_services)"; then apply "$addrs" "$svcs"; else echo "egress: keeping the earlier addresses" >&2; fi
 done
