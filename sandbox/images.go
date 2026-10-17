@@ -71,6 +71,13 @@ func (d *Driver) Build(ctx context.Context, stack string) (Images, error) {
 		}
 	}
 	for _, base := range []string{NodeImage, stack} {
+		if base == stack && !gungnir.ValidImage(stack) {
+			// A stack built from a realm's context is local (BuildStack): there is nothing to pull.
+			if _, err := d.run(ctx, d.Podman, "image", "exists", stack); err != nil {
+				return Images{}, fmt.Errorf("%w: %s (build the realm's stack first)", ErrNoImage, stack)
+			}
+			continue
+		}
 		if _, err := d.run(ctx, d.Podman, "pull", "-q", "--authfile", filepath.Join(d.auth, "auth.json"), base); err != nil {
 			return Images{}, err
 		}
