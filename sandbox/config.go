@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 
 	"github.com/ouroboric-dev/gungnir"
@@ -108,9 +109,9 @@ type composeFile struct {
 type service struct {
 	Image       string            `yaml:"image"`
 	PullPolicy  string            `yaml:"pull_policy"` // never: images are built or pulled beforehand, with the isolated auth
-	Command     []string          `yaml:"command"`
+	Command     []string          `yaml:"command,omitempty"`
 	User        string            `yaml:"user,omitempty"`
-	UsernsMode  string            `yaml:"userns_mode"`
+	UsernsMode  string            `yaml:"userns_mode,omitempty"`
 	CapAdd      []string          `yaml:"cap_add,omitempty"`
 	CapDrop     []string          `yaml:"cap_drop,omitempty"`
 	SecurityOpt []string          `yaml:"security_opt,omitempty"`
@@ -118,7 +119,7 @@ type service struct {
 	DependsOn   []string          `yaml:"depends_on,omitempty"`
 	Environment map[string]string `yaml:"environment,omitempty"`
 	Labels      map[string]string `yaml:"labels"`
-	Volumes     []string          `yaml:"volumes"`
+	Volumes     []string          `yaml:"volumes,omitempty"`
 }
 
 // Generate writes a sandbox's devcontainer.json, compose.yaml and firewall host list into dir,
@@ -188,6 +189,20 @@ func render(dir string, spec gungnir.SandboxSpec, c Config) (map[string][]byte, 
 			},
 		},
 	}}
+	// The services a leaf's realm, and the realms of the leaves it consumes, ask for. They run on the
+	// image's own user and command, with no mount, no capability beyond the engine's default set and no
+	// published port: the work container reaches them by name, through the firewall's network, only on
+	// the ports the spec lists (egress.sh).
+	var names []string
+	for _, v := range spec.Services {
+		cf.Services[v.Name] = service{Image: v.Image, PullPolicy: "never", SecurityOpt: []string{"no-new-privileges:true"},
+			Environment: maps.Clone(v.Env), Labels: labels}
+		names = append(names, v.Name)
+	}
+	slices.Sort(names)
+	fwSvc, workSvc := cf.Services["fw"], cf.Services["work"]
+	fwSvc.DependsOn, workSvc.DependsOn = names, append([]string{"fw"}, names...)
+	cf.Services["fw"], cf.Services["work"] = fwSvc, workSvc
 	dc := map[string]any{
 		"name": Project(spec), "dockerComposeFile": "compose.yaml", "service": "work",
 		"workspaceFolder": Root + "/" + l.Leaf, "updateRemoteUserUID": false, "shutdownAction": "stopCompose",
