@@ -9,15 +9,18 @@ package sandbox
 //	YGG_SANDBOX_SERVICE_IMAGE   such as docker.io/library/nginx:1.27-alpine@sha256:<digest>
 //	YGG_SANDBOX_SERVICE_PORT    the port it listens on, such as 80
 //
-// then run: go test -tags sandbox -run 'TestSandboxServices|TestSandboxScratch' -v -timeout 40m ./sandbox
+// then run: go test -tags sandbox -run 'TestSandboxServices|TestSandboxScratch|TestASandboxService' -v -timeout 40m ./sandbox
 
 import (
 	"bytes"
 	"context"
+	"net"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -135,5 +138,156 @@ func TestSandboxScratchHoldsOneFolderAndNothingElse(t *testing.T) {
 		if code, _ := inSandbox(t, ctx, d, env, argv...); code == 0 {
 			t.Errorf("%s is there", name)
 		}
+	}
+}
+
+// Backlog N-1: a service sits on the internal services network alone, so nothing in it reaches past
+// the sandbox: not the internet, not the network's gateway, not the host, not an outside name. The
+// commands run inside the service container through the engine, as proveClosed reaches the firewall's.
+// They need busybox's sh, timeout, nc, wget, ip and nslookup, and an HTTP server on the service's
+// port (docker.io/library/nginx:*-alpine). A probe passes on any failure of its command; only a
+// connection, an answer or a resolved name fails the test. Controls prove the probes can see a
+// connection at all: the same probes reach the service's own port on 127.0.0.1.
+func TestASandboxServiceHasNoRouteOut(t *testing.T) {
+	image, portText := os.Getenv("YGG_SANDBOX_SERVICE_IMAGE"), os.Getenv("YGG_SANDBOX_SERVICE_PORT")
+	if image == "" || portText == "" {
+		t.Skip("set YGG_SANDBOX_SERVICE_IMAGE and YGG_SANDBOX_SERVICE_PORT to run this test")
+	}
+	port, err := strconv.Atoi(portText)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 35*time.Minute)
+	defer cancel()
+	d, tree := itDriver(t, ctx)
+
+	// A listener on the host, on every address: a connection from the service that lands here is a
+	// route to the host, whatever the probe's command made of it.
+	ln, err := net.Listen("tcp4", "0.0.0.0:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { ln.Close() })
+	var taken atomic.Int32
+	go func() {
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			taken.Add(1)
+			c.Write([]byte("ygg-host\n"))
+			c.Close()
+		}
+	}()
+	hostPort := ln.Addr().(*net.TCPAddr).Port
+
+	spec := itTree(t, tree)
+	spec.Services = []gungnir.Service{{Name: "svc", Image: image, Ports: []int{port}}}
+	env, err := d.Up(ctx, spec)
+	if err != nil {
+		t.Fatalf("Up() = %v", err)
+	}
+	t.Cleanup(func() { d.Down(context.Background(), env) })
+	ids, err := d.run(ctx, d.Podman, "ps", "-q", "--filter", "label=com.docker.compose.project="+env.Project, "--filter", "label=com.docker.compose.service=svc")
+	id := strings.TrimSpace(string(ids))
+	if err != nil || id == "" || strings.Contains(id, "\n") {
+		t.Fatalf("the service container of %s: %q, %v", env.Project, id, err)
+	}
+	// in runs script in the service container; its exit status is the script's business, so a
+	// failing command is no error here. alive shows that the exec itself works, before and after the
+	// probes, so a container that is gone never reads as a closed network.
+	in := func(script string) string {
+		out, _ := d.run(ctx, d.Podman, "exec", id, "sh", "-c", script)
+		return strings.TrimSpace(string(out))
+	}
+	alive := func(when string) {
+		t.Helper()
+		const tools = `for c in sh timeout nc wget ip nslookup; do command -v "$c" >/dev/null 2>&1 || echo "missing $c"; done; echo ready`
+		if out := in(tools); out != "ready" {
+			t.Fatalf("%s, the service container can't run the probes: %q", when, out)
+		}
+	}
+	// tcp says REACHED when nc connected: it exited 0, or it printed what the far end sent.
+	tcp := func(host string, p int) string {
+		return in(`out=$(printf 'GET / HTTP/1.0\r\n\r\n' | timeout 3 nc -w 3 ` + host + ` ` + strconv.Itoa(p) + ` 2>/dev/null); rc=$?
+if [ "$rc" = 0 ] || [ -n "$out" ]; then echo REACHED; else echo "blocked ($rc)"; fi`)
+	}
+	// web says REACHED when wget got an answer, even an HTTP error.
+	web := func(url string) string {
+		return in(`out=$(timeout 5 wget -S -T 3 -O /dev/null ` + url + ` 2>&1); rc=$?
+if [ "$rc" = 0 ] || echo "$out" | grep -q 'HTTP/'; then echo REACHED; else echo "blocked ($rc)"; fi`)
+	}
+
+	alive("before the probes")
+	local := "127.0.0.1"
+	if got := tcp(local, port); got != "REACHED" {
+		t.Fatalf("control: nc to the service's own port %d on %s: %q; the probe can't see a connection", port, local, got)
+	}
+	if got := web("http://" + local + ":" + strconv.Itoa(port) + "/"); got != "REACHED" {
+		t.Fatalf("control: wget to the service's own port %d on %s: %q; the probe can't see an answer", port, local, got)
+	}
+
+	// (a) the internet, by address.
+	if got := tcp("1.1.1.1", 443); got == "REACHED" {
+		t.Error("the service connected to 1.1.1.1:443")
+	}
+
+	// (b) the gateway and the host. An internal network gives no default route; a gateway it does
+	// give is probed too, and so is every address of the host and the name podman gives the host.
+	routes := in("ip route 2>&1")
+	if routes == "" {
+		t.Fatal("ip route printed nothing in the service container")
+	}
+	t.Logf("the service's routes:\n%s", routes)
+	var targets []string
+	for _, family := range []string{routes, in("ip -6 route 2>/dev/null")} {
+		for _, line := range strings.Split(family, "\n") {
+			f := strings.Fields(line)
+			if len(f) == 0 || f[0] != "default" {
+				continue
+			}
+			t.Errorf("the service has a default route: %s", line)
+			for i := range len(f) - 1 {
+				if f[i] == "via" {
+					targets = append(targets, f[i+1])
+				}
+			}
+		}
+	}
+	addrs, err := net.InterfaceAddrs()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, a := range addrs {
+		if ip, ok := a.(*net.IPNet); ok && ip.IP.To4() != nil && !ip.IP.IsLoopback() {
+			targets = append(targets, ip.IP.String())
+		}
+	}
+	if h := in(`awk '{ for (i = 2; i <= NF; i++) if ($i == "host.containers.internal") print $1 }' /etc/hosts | head -n 1`); h != "" {
+		targets = append(targets, h)
+	}
+	for _, host := range targets {
+		for _, p := range []int{hostPort, 80, 443} {
+			if got := tcp(host, p); got == "REACHED" {
+				t.Errorf("the service connected to %s:%d", host, p)
+			}
+		}
+	}
+
+	// (c) an outside name: no address for it, and no connection to it.
+	if out := in("timeout 6 nslookup example.com 2>&1"); regexp.MustCompile(`(?m)^Name:\s*example\.com`).MatchString(out) {
+		t.Errorf("the service resolved example.com:\n%s", out)
+	}
+	if got := tcp("example.com", 80); got == "REACHED" {
+		t.Error("the service connected to example.com:80")
+	}
+	if got := web("http://example.com/"); got == "REACHED" {
+		t.Error("the service got an answer from http://example.com/")
+	}
+
+	alive("after the probes")
+	if n := taken.Load(); n > 0 {
+		t.Errorf("the host's listener on port %d took %d connections from the service", hostPort, n)
 	}
 }
