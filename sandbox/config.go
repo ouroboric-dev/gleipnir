@@ -237,7 +237,8 @@ func render(dir string, spec gungnir.SandboxSpec, c Config) (map[string][]byte, 
 		},
 	}}
 	// The services a leaf's realm, and the realms of the leaves it consumes, ask for. They run on the
-	// image's own user and command, with no mount, no capability beyond the engine's default set and no
+	// image's own user and command (or the argument vector the pack gives an image that does nothing
+	// without one; gungnir refuses a '$' in it), with no mount, no capability beyond the engine's default set and no
 	// published port: the work container reaches them by name, through the firewall's network, only on
 	// the ports the spec lists (egress.sh). They sit on the internal ServicesNetwork alone, with no route
 	// out, so none of them can reach the internet for a client; the firewall joins it beside the default
@@ -245,7 +246,7 @@ func render(dir string, spec gungnir.SandboxSpec, c Config) (map[string][]byte, 
 	var names []string
 	for _, v := range spec.Services {
 		cf.Services[v.Name] = service{Image: v.Image, PullPolicy: "never", SecurityOpt: []string{"no-new-privileges:true"},
-			Networks: []string{ServicesNetwork}, Environment: literalEnv(v.Env), Labels: labels}
+			Command: v.Command, Networks: []string{ServicesNetwork}, Environment: literalEnv(v.Env), Labels: labels}
 		names = append(names, v.Name)
 	}
 	slices.Sort(names)
