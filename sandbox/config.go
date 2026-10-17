@@ -145,6 +145,20 @@ type service struct {
 	Volumes     []string          `yaml:"volumes,omitempty"`
 }
 
+// literalEnv returns env as compose must read it to take each value literally: every '$' doubled, so
+// compose never expands a value from the environment it runs in. gungnir refuses a '$' in a service's
+// env value already; this is the second layer (review I-6).
+func literalEnv(env map[string]string) map[string]string {
+	if env == nil {
+		return nil
+	}
+	out := make(map[string]string, len(env))
+	for k, v := range env {
+		out[k] = strings.ReplaceAll(v, "$", "$$")
+	}
+	return out
+}
+
 // workVolumes are the work container's mounts: the leaf read-write and its git dir read-only, mirrored
 // under Root; for a scratch folder, the folder alone.
 func workVolumes(spec gungnir.SandboxSpec, l gungnir.Layout, leaf, git string) []string {
@@ -231,7 +245,7 @@ func render(dir string, spec gungnir.SandboxSpec, c Config) (map[string][]byte, 
 	var names []string
 	for _, v := range spec.Services {
 		cf.Services[v.Name] = service{Image: v.Image, PullPolicy: "never", SecurityOpt: []string{"no-new-privileges:true"},
-			Networks: []string{ServicesNetwork}, Environment: maps.Clone(v.Env), Labels: labels}
+			Networks: []string{ServicesNetwork}, Environment: literalEnv(v.Env), Labels: labels}
 		names = append(names, v.Name)
 	}
 	slices.Sort(names)

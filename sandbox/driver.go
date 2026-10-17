@@ -32,6 +32,9 @@ type Driver struct {
 	engine string
 	work   string // where every sandbox's configuration folder goes
 	auth   string // the empty registry auth every call uses
+	// stubEnv lets a test's stub tools see the process's variables that start with it, which set
+	// their answers.
+	stubEnv string
 	// beforeUp lets a test change the configuration after Generate, to show Validate runs before the start.
 	beforeUp func(Generated)
 }
@@ -59,17 +62,27 @@ func New(socket string, cfg Config, work string) (*Driver, error) {
 		cfg: cfg, engine: socket, work: work, auth: auth}, nil
 }
 
-// Env returns the environment for every engine call: the operator's, without any variable that
-// points the tools at another engine or other registry credentials, and with ours.
+// toolEnv names the operator's variables the engine tools keep: those that find the tools and their
+// folders, which a rootless podman needs too. No other variable of the operator's reaches them: compose
+// expands ${NAME} in compose.yaml from their environment, and no variable that points them at another
+// engine, other registry credentials or another compose project may (review I-6).
+var toolEnv = []string{"PATH", "HOME", "TMPDIR", "XDG_RUNTIME_DIR", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME"}
+
+// Env returns the environment for every engine call: the operator's variables that toolEnv names, and
+// the factory's engine and isolated registry auth.
 func (d *Driver) Env() []string {
 	var env []string
-	for _, kv := range os.Environ() {
-		name, _, _ := strings.Cut(kv, "=")
-		switch name {
-		case "CONTAINER_HOST", "CONTAINER_CONNECTION", "DOCKER_HOST", "DOCKER_CONFIG", "REGISTRY_AUTH_FILE", "DOCKER_CONTEXT", "COMPOSE_PROJECT_NAME":
-			continue
+	for _, name := range toolEnv {
+		if v, ok := os.LookupEnv(name); ok {
+			env = append(env, name+"="+v)
 		}
-		env = append(env, kv)
+	}
+	if d.stubEnv != "" {
+		for _, kv := range os.Environ() {
+			if strings.HasPrefix(kv, d.stubEnv) {
+				env = append(env, kv)
+			}
+		}
 	}
 	return append(env, "CONTAINER_HOST="+d.engine, "REGISTRY_AUTH_FILE="+filepath.Join(d.auth, "auth.json"), "DOCKER_CONFIG="+d.auth)
 }

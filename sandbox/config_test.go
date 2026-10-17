@@ -1,6 +1,7 @@
 package sandbox
 
 import (
+	"maps"
 	"os"
 	"path/filepath"
 	"strings"
@@ -102,5 +103,19 @@ func TestGenerateRefusesWhatCouldNotBeHardened(t *testing.T) {
 	outside := spec("/home/ana/elsewhere")
 	if _, err := Generate(t.TempDir(), outside, cfg()); err == nil || !strings.Contains(err.Error(), "can't see") {
 		t.Errorf("a leaf the engine can't see: %v", err)
+	}
+}
+
+// Review I-6: a '$' in a service's env value is written as '$$', so compose takes it literally and
+// never expands it from the environment it runs in. gungnir refuses such a value already; this is the
+// second layer.
+func TestServiceEnvValuesAreWrittenLiterally(t *testing.T) {
+	got := literalEnv(map[string]string{"A": "pre-${SECRET}", "B": "$HOME", "C": "plain", "D": "$$"})
+	want := map[string]string{"A": "pre-$${SECRET}", "B": "$$HOME", "C": "plain", "D": "$$$$"}
+	if !maps.Equal(got, want) {
+		t.Errorf("literalEnv() = %v, want %v", got, want)
+	}
+	if literalEnv(nil) != nil {
+		t.Error("literalEnv(nil) is not nil: a service with no env would get an empty environment key")
 	}
 }

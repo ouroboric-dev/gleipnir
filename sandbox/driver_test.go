@@ -63,6 +63,7 @@ echo '{"outcome":"success","containerId":"work123","composeProjectName":"x","rem
 		t.Fatal(err)
 	}
 	d.Podman, d.Devcontainer, d.Compose, d.ReadyTimeout = podman, dc, "podman-compose", 2*time.Second
+	d.stubEnv = "STUB_" // the stubs' answers; the tools get no other variable of the test's
 	sp = spec(parent)
 	return d, log, sp
 }
@@ -410,5 +411,39 @@ func TestDownGivesUpOnAHungEngine(t *testing.T) {
 	err := d.Down(context.WithoutCancel(context.Background()), gungnir.Env{Project: Project(sp), Container: "work123"})
 	if err == nil || time.Since(began) > 10*time.Second {
 		t.Errorf("Down() = %v after %v; want an error, promptly", err, time.Since(began))
+	}
+}
+
+// Review I-6: the engine tools get a minimal environment, not the operator's whole one. compose expands
+// ${NAME} in compose.yaml from it, and nothing else in it is the factory's choice.
+func TestEngineToolsGetAMinimalEnvironment(t *testing.T) {
+	d, _, _ := fakeEngine(t)
+	t.Setenv("YGG_UNRELATED_SETTING", "leaks-into-compose-7f3a")
+	t.Setenv("HOME", "/home/ana")
+	envOut := filepath.Join(t.TempDir(), "devcontainer")
+	os.WriteFile(envOut, []byte("#!/bin/sh\nenv\n"), 0o755) // a tool that prints the environment it got
+	d.Devcontainer = envOut
+	out, err := d.DevcontainerCLI(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]string{}
+	for _, line := range strings.Split(out, "\n") {
+		k, v, _ := strings.Cut(line, "=")
+		got[k] = v
+	}
+	if v, ok := got["YGG_UNRELATED_SETTING"]; ok {
+		t.Errorf("an unrelated variable of the operator's reached the tool: YGG_UNRELATED_SETTING=%s", v)
+	}
+	if got["PATH"] != os.Getenv("PATH") || got["HOME"] != "/home/ana" {
+		t.Errorf("PATH = %q, HOME = %q; the tools need the operator's PATH and HOME", got["PATH"], got["HOME"])
+	}
+	if got["CONTAINER_HOST"] != socket || got["REGISTRY_AUTH_FILE"] != filepath.Join(d.work, "registry-auth", "auth.json") || got["DOCKER_CONFIG"] != filepath.Join(d.work, "registry-auth") {
+		t.Errorf("the tool lacks the factory's engine or isolated auth: %v", got)
+	}
+	for _, kv := range d.Env() {
+		if strings.HasPrefix(kv, "YGG_UNRELATED_SETTING=") {
+			t.Errorf("Env() holds %s", kv)
+		}
 	}
 }
