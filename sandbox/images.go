@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+
+	"github.com/ouroboric-dev/gungnir"
 )
 
 //go:embed assets/Containerfile
@@ -40,6 +42,17 @@ func ImagesFor(stack string) Images {
 	fw := hex.EncodeToString(h.Sum(nil))[:12]
 	fmt.Fprintf(h, "%d:%s\n", len(stack), stack)
 	return Images{Work: "localhost/ygg-work:" + hex.EncodeToString(h.Sum(nil))[:12], Firewall: "localhost/ygg-fw:" + fw}
+}
+
+// Pull fetches one image, which must be pinned by digest, with the isolated registry auth: a service's
+// image, which a sandbox's compose file uses without ever pulling it (a run never pulls). Like Build, it
+// is for ygg sandbox build alone.
+func (d *Driver) Pull(ctx context.Context, image string) error {
+	if !gungnir.ValidImage(image) {
+		return fmt.Errorf("%q is not an image pinned by digest, so it is not pulled", image)
+	}
+	_, err := d.run(ctx, d.Podman, "pull", "-q", "--authfile", filepath.Join(d.auth, "auth.json"), image)
+	return err
 }
 
 // Build pulls the bases by digest, with the isolated auth, and builds the firewall and work images

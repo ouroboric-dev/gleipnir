@@ -63,6 +63,7 @@ echo '{"outcome":"success","containerId":"work123","composeProjectName":"x","rem
 		t.Fatal(err)
 	}
 	d.Podman, d.Devcontainer, d.Compose, d.ReadyTimeout = podman, dc, "podman-compose", 2*time.Second
+	d.stubEnv = "STUB_" // the stubs' answers; the tools get no other variable of the test's
 	sp = spec(parent)
 	return d, log, sp
 }
@@ -89,7 +90,7 @@ func TestUpUsesTheEngineAndAuthTheFactoryChose(t *testing.T) {
 	if !strings.Contains(got, "host="+socket) || !strings.Contains(got, "auth="+filepath.Join(d.work, "registry-auth", "auth.json")) {
 		t.Errorf("a call lacked the factory's engine or the isolated auth:\n%s", got)
 	}
-	for _, want := range []string{"devcontainer up --docker-path", "--skip-post-create", "--config " + filepath.Join(d.work, "repos-app", "devcontainer.json")} {
+	for _, want := range []string{"devcontainer up --docker-path", "--skip-post-create", "--config " + filepath.Join(ConfigDir(d.work, sp), "devcontainer.json")} {
 		if !strings.Contains(got, want) {
 			t.Errorf("the devcontainer call lacks %q:\n%s", want, got)
 		}
@@ -233,7 +234,7 @@ func TestEachCommandStartsWithAnEmptyHome(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	compose, _ := os.ReadFile(filepath.Join(d.work, "repos-app", "compose.yaml"))
+	compose, _ := os.ReadFile(filepath.Join(ConfigDir(d.work, sp), "compose.yaml"))
 	for _, kv := range []string{"HOME: /home/ygg", "XDG_CONFIG_HOME: /home/ygg/.config", "XDG_CACHE_HOME: /home/ygg/.cache",
 		"XDG_DATA_HOME: /home/ygg/.local/share", "XDG_STATE_HOME: /home/ygg/.local/state"} {
 		if !strings.Contains(string(compose), kv) {
@@ -276,6 +277,9 @@ func TestDownRemovesByLabelAndRepeats(t *testing.T) {
 	got := logOf(t, log)
 	if strings.Count(got, "podman rm -f -t 2 --depend work123 fw456") != 2 || !strings.Contains(got, "network rm -f "+env.Project+"_default") {
 		t.Errorf("Down didn't remove the containers and the network:\n%s", got)
+	}
+	if !strings.Contains(got, "network rm -f "+env.Project+"_"+ServicesNetwork) {
+		t.Errorf("Down didn't remove the services' internal network:\n%s", got)
 	}
 	if err := d.Down(context.Background(), gungnir.Env{}); err == nil {
 		t.Error("Down with no project succeeded")
@@ -407,5 +411,39 @@ func TestDownGivesUpOnAHungEngine(t *testing.T) {
 	err := d.Down(context.WithoutCancel(context.Background()), gungnir.Env{Project: Project(sp), Container: "work123"})
 	if err == nil || time.Since(began) > 10*time.Second {
 		t.Errorf("Down() = %v after %v; want an error, promptly", err, time.Since(began))
+	}
+}
+
+// Review I-6: the engine tools get a minimal environment, not the operator's whole one. compose expands
+// ${NAME} in compose.yaml from it, and nothing else in it is the factory's choice.
+func TestEngineToolsGetAMinimalEnvironment(t *testing.T) {
+	d, _, _ := fakeEngine(t)
+	t.Setenv("YGG_UNRELATED_SETTING", "leaks-into-compose-7f3a")
+	t.Setenv("HOME", "/home/ana")
+	envOut := filepath.Join(t.TempDir(), "devcontainer")
+	os.WriteFile(envOut, []byte("#!/bin/sh\nenv\n"), 0o755) // a tool that prints the environment it got
+	d.Devcontainer = envOut
+	out, err := d.DevcontainerCLI(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]string{}
+	for _, line := range strings.Split(out, "\n") {
+		k, v, _ := strings.Cut(line, "=")
+		got[k] = v
+	}
+	if v, ok := got["YGG_UNRELATED_SETTING"]; ok {
+		t.Errorf("an unrelated variable of the operator's reached the tool: YGG_UNRELATED_SETTING=%s", v)
+	}
+	if got["PATH"] != os.Getenv("PATH") || got["HOME"] != "/home/ana" {
+		t.Errorf("PATH = %q, HOME = %q; the tools need the operator's PATH and HOME", got["PATH"], got["HOME"])
+	}
+	if got["CONTAINER_HOST"] != socket || got["REGISTRY_AUTH_FILE"] != filepath.Join(d.work, "registry-auth", "auth.json") || got["DOCKER_CONFIG"] != filepath.Join(d.work, "registry-auth") {
+		t.Errorf("the tool lacks the factory's engine or isolated auth: %v", got)
+	}
+	for _, kv := range d.Env() {
+		if strings.HasPrefix(kv, "YGG_UNRELATED_SETTING=") {
+			t.Errorf("Env() holds %s", kv)
+		}
 	}
 }

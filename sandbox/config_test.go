@@ -1,6 +1,7 @@
 package sandbox
 
 import (
+	"maps"
 	"os"
 	"path/filepath"
 	"strings"
@@ -68,7 +69,7 @@ func TestGenerateWritesTheMirroredHardenedConfig(t *testing.T) {
 		len(work.CapAdd) != 0 || work.CapDrop[0] != "ALL" || fw.CapAdd[0] != "NET_ADMIN" {
 		t.Errorf("work = %+v, fw = %+v; want keep-id on both, no added capability in work, and the firewall in its own sidecar", work, fw)
 	}
-	if cf.Name != "ygg20261016101500a1b2c3reposapp" || work.Labels[LabelRun] != "20261016-101500-a1b2c3" {
+	if !strings.HasPrefix(cf.Name, "ygg20261016101500a1b2c3reposapp") || len(cf.Name) != len("ygg20261016101500a1b2c3reposapp")+8 || work.Labels[LabelRun] != "20261016-101500-a1b2c3" {
 		t.Errorf("project %q, labels %v", cf.Name, work.Labels)
 	}
 	if fw.User != "0:0" {
@@ -102,5 +103,19 @@ func TestGenerateRefusesWhatCouldNotBeHardened(t *testing.T) {
 	outside := spec("/home/ana/elsewhere")
 	if _, err := Generate(t.TempDir(), outside, cfg()); err == nil || !strings.Contains(err.Error(), "can't see") {
 		t.Errorf("a leaf the engine can't see: %v", err)
+	}
+}
+
+// Review I-6: a '$' in a service's env value is written as '$$', so compose takes it literally and
+// never expands it from the environment it runs in. gungnir refuses such a value already; this is the
+// second layer.
+func TestServiceEnvValuesAreWrittenLiterally(t *testing.T) {
+	got := literalEnv(map[string]string{"A": "pre-${SECRET}", "B": "$HOME", "C": "plain", "D": "$$"})
+	want := map[string]string{"A": "pre-$${SECRET}", "B": "$$HOME", "C": "plain", "D": "$$$$"}
+	if !maps.Equal(got, want) {
+		t.Errorf("literalEnv() = %v, want %v", got, want)
+	}
+	if literalEnv(nil) != nil {
+		t.Error("literalEnv(nil) is not nil: a service with no env would get an empty environment key")
 	}
 }
