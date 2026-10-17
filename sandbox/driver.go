@@ -63,16 +63,24 @@ func New(socket string, cfg Config, work string) (*Driver, error) {
 }
 
 // toolEnv names the operator's variables the engine tools keep: those that find the tools and their
-// folders, which a rootless podman needs too. No other variable of the operator's reaches them: compose
-// expands ${NAME} in compose.yaml from their environment, and no variable that points them at another
-// engine, other registry credentials or another compose project may (review I-6).
-var toolEnv = []string{"PATH", "HOME", "TMPDIR", "XDG_RUNTIME_DIR", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME"}
+// folders, which a rootless podman needs too; the proxy an image pull goes through; podman's own
+// configuration files; and the CA bundle that trusts a company proxy (backlog N-5). No other variable
+// of the operator's reaches them: compose expands ${NAME} in compose.yaml from their environment, and
+// no variable that points them at another engine, other registry credentials or another compose
+// project may (review I-6). A proxy URL can hold a password: Env never logs what it passes.
+var toolEnv = []string{"PATH", "HOME", "TMPDIR", "XDG_RUNTIME_DIR", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME",
+	"HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "http_proxy", "https_proxy", "no_proxy",
+	"CONTAINERS_CONF", "CONTAINERS_CONF_OVERRIDE", "CONTAINERS_STORAGE_CONF", "CONTAINERS_REGISTRIES_CONF",
+	"SSL_CERT_FILE", "SSL_CERT_DIR"}
 
 // Env returns the environment for every engine call: the operator's variables that toolEnv names, and
-// the factory's engine and isolated registry auth.
+// the factory's engine and isolated registry auth, which come last and so win.
 func (d *Driver) Env() []string {
 	var env []string
 	for _, name := range toolEnv {
+		if secretName.MatchString(name) {
+			continue // a name that looks like a credential never passes, even if toolEnv grows one
+		}
 		if v, ok := os.LookupEnv(name); ok {
 			env = append(env, name+"="+v)
 		}

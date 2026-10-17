@@ -447,3 +447,87 @@ func TestEngineToolsGetAMinimalEnvironment(t *testing.T) {
 		}
 	}
 }
+
+// Backlog N-5: an operator behind a proxy, with podman configured in its own files or with a
+// company CA, keeps those settings in the engine tools; still no unrelated variable, no
+// credential-like one, and the operator's registry auth never displaces the isolated one.
+func TestEngineToolsKeepTheOperatorsProxyPodmanAndCAVariables(t *testing.T) {
+	d, _, _ := fakeEngine(t)
+	kept := map[string]string{
+		"HTTP_PROXY": "http://ana:made-up-pw@proxy.example:3128", "HTTPS_PROXY": "http://proxy.example:3129",
+		"NO_PROXY": "localhost,.internal.example", "http_proxy": "http://proxy.example:3130",
+		"https_proxy": "http://proxy.example:3131", "no_proxy": "127.0.0.1",
+		"CONTAINERS_CONF": "/etc/ana/containers.conf", "CONTAINERS_CONF_OVERRIDE": "/etc/ana/override.conf",
+		"CONTAINERS_STORAGE_CONF": "/etc/ana/storage.conf", "CONTAINERS_REGISTRIES_CONF": "/etc/ana/registries.conf",
+		"SSL_CERT_FILE": "/etc/ana/ca.pem", "SSL_CERT_DIR": "/etc/ana/certs",
+	}
+	for k, v := range kept {
+		t.Setenv(k, v)
+	}
+	dropped := map[string]string{
+		"YGG_UNRELATED_SETTING": "leaks-into-compose-7f3a", "HTTP_PROXY_TOKEN": "made-up-token-91c2",
+		"REGISTRY_PASSWORD": "made-up-pw-4b7e",
+	}
+	for k, v := range dropped {
+		t.Setenv(k, v)
+	}
+	t.Setenv("REGISTRY_AUTH_FILE", "/home/ana/.config/containers/auth.json")
+	t.Setenv("DOCKER_CONFIG", "/home/ana/.docker")
+	t.Setenv("CONTAINER_HOST", "unix:///run/user/1000/other.sock")
+	envOut := filepath.Join(t.TempDir(), "devcontainer")
+	os.WriteFile(envOut, []byte("#!/bin/sh\nenv\n"), 0o755) // a tool that prints the environment it got
+	d.Devcontainer = envOut
+	out, err := d.DevcontainerCLI(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]string{}
+	for _, line := range strings.Split(out, "\n") {
+		k, v, _ := strings.Cut(line, "=")
+		got[k] = v
+	}
+	for k, v := range kept {
+		if got[k] != v { // the values stay out of the message: a proxy URL can hold a password
+			t.Errorf("%s did not reach the tool as the operator set it", k)
+		}
+	}
+	for k := range dropped {
+		if _, ok := got[k]; ok {
+			t.Errorf("%s of the operator's reached the tool", k)
+		}
+	}
+	if got["CONTAINER_HOST"] != socket || got["REGISTRY_AUTH_FILE"] != filepath.Join(d.work, "registry-auth", "auth.json") || got["DOCKER_CONFIG"] != filepath.Join(d.work, "registry-auth") {
+		t.Errorf("the operator's engine or registry auth displaced the factory's: CONTAINER_HOST=%q REGISTRY_AUTH_FILE=%q DOCKER_CONFIG=%q",
+			got["CONTAINER_HOST"], got["REGISTRY_AUTH_FILE"], got["DOCKER_CONFIG"])
+	}
+	seen := map[string]int{}
+	for _, kv := range d.Env() {
+		k, _, _ := strings.Cut(kv, "=")
+		seen[k]++
+	}
+	for _, k := range []string{"CONTAINER_HOST", "REGISTRY_AUTH_FILE", "DOCKER_CONFIG"} {
+		if seen[k] != 1 {
+			t.Errorf("Env() holds %s %d times, want once: the factory's value only", k, seen[k])
+		}
+	}
+}
+
+// Backlog N-5: no name the engine tools keep from the operator looks like a credential, and Env
+// refuses one even if toolEnv were to name it.
+func TestToolEnvNamesNoCredential(t *testing.T) {
+	for _, name := range toolEnv {
+		if secretName.MatchString(name) {
+			t.Errorf("toolEnv keeps %s, which looks like a credential", name)
+		}
+	}
+	d, _, _ := fakeEngine(t)
+	saved := toolEnv
+	t.Cleanup(func() { toolEnv = saved })
+	toolEnv = append(append([]string(nil), saved...), "YGG_PROXY_TOKEN")
+	t.Setenv("YGG_PROXY_TOKEN", "made-up-token-5d1a")
+	for _, kv := range d.Env() {
+		if strings.HasPrefix(kv, "YGG_PROXY_TOKEN=") {
+			t.Error("Env() passed YGG_PROXY_TOKEN, a name that looks like a credential")
+		}
+	}
+}
