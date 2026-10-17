@@ -3,6 +3,7 @@ package sandbox
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 )
@@ -29,7 +30,7 @@ func TestTheFactoryLayerIsPinned(t *testing.T) {
 	if !strings.Contains(NodeImage, "@sha256:") || len(GitleaksSHA256) != 64 {
 		t.Error("a base image or the gitleaks archive isn't pinned by digest")
 	}
-	for _, want := range []string{"sha256sum -c", "npm install -g --prefix /opt/ygg", "DISABLE_AUTOUPDATER=1", "AS fw", "AS work",
+	for _, want := range []string{"sha256sum -c", "npm install -g --prefix /opt/ygg", "DISABLE_AUTOUPDATER=1", "AS fw", "AS work", "iptables dnsmasq-base",
 		"the stack image needs bash, timeout and git"} {
 		if !strings.Contains(containerfile, want) {
 			t.Errorf("the Containerfile lacks %q", want)
@@ -59,5 +60,36 @@ func TestBuildPullsWithIsolatedAuthThenBuildsNeverPulling(t *testing.T) {
 	}
 	if strings.Index(got, "podman pull") > strings.Index(got, "podman build") {
 		t.Error("a build ran before the pulls")
+	}
+}
+
+const builtStack = "localhost/ygg-stack-midgard-react:0123456789ab"
+
+func TestBuildStartsFromABuiltStackWithoutPullingIt(t *testing.T) {
+	d, log, _ := fakeEngine(t)
+	imgs, err := d.Build(context.Background(), builtStack)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := logOf(t, log)
+	if strings.Contains(got, "podman pull -q --authfile "+d.auth+"/auth.json "+builtStack) {
+		t.Errorf("a stack built here was pulled from a registry:\n%s", got)
+	}
+	for _, want := range []string{"podman image exists " + builtStack, "podman pull -q --authfile " + d.auth + "/auth.json " + NodeImage,
+		"STACK_IMAGE=" + builtStack, "--pull=never --target work -t " + imgs.Work} {
+		if !strings.Contains(got, want) {
+			t.Errorf("the engine calls lack %q:\n%s", want, got)
+		}
+	}
+}
+
+func TestBuildRefusesABuiltStackThatWasNotBuilt(t *testing.T) {
+	d, log, _ := fakeEngine(t)
+	t.Setenv("STUB_MISSING", builtStack)
+	if _, err := d.Build(context.Background(), builtStack); !errors.Is(err, ErrNoImage) || !strings.Contains(err.Error(), builtStack) {
+		t.Errorf("Build() = %v; want ErrNoImage naming the stack", err)
+	}
+	if got := logOf(t, log); strings.Contains(got, "podman build") {
+		t.Errorf("the layers were built on a stack that is missing:\n%s", got)
 	}
 }
