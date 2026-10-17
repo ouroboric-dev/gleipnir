@@ -47,7 +47,7 @@ func (d *Driver) Leftovers(ctx context.Context) ([]Leftover, error) {
 	return ls, nil
 }
 
-// StopLeftover removes the containers and the network of a leftover's project.
+// StopLeftover removes the containers and the networks of a leftover's project.
 func (d *Driver) StopLeftover(ctx context.Context, l Leftover) error {
 	return d.Down(ctx, gungnir.Env{Project: l.Project, Name: l.Leaf, Container: l.Container})
 }

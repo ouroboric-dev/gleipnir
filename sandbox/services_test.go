@@ -175,3 +175,83 @@ func TestPullFetchesAnImageWithTheIsolatedAuthAndOnlyADigestPinnedOne(t *testing
 		}
 	}
 }
+
+// composeMap reads a compose.yaml as plain maps, so a test sees every key the factory wrote.
+func composeMap(t *testing.T, path string) map[string]any {
+	t.Helper()
+	var m map[string]any
+	b, _ := os.ReadFile(path)
+	if err := yaml.Unmarshal(b, &m); err != nil {
+		t.Fatal(err)
+	}
+	return m
+}
+
+func networksOf(m map[string]any, name string) []string {
+	var out []string
+	nets, _ := svc(m, name)["networks"].([]any)
+	for _, n := range nets {
+		s, _ := n.(string)
+		out = append(out, s)
+	}
+	return out
+}
+
+// Review C-1: a service that opens connections at a client's request must not be a way out of the
+// sandbox. The services sit on an internal network, with no route out, which the firewall joins too, so
+// the work container (in the firewall's network namespace) reaches them while they reach nothing else.
+func TestServicesHaveNoRouteOut(t *testing.T) {
+	tmp := t.TempDir()
+	c := cfg()
+	c.Mounts = append(c.Mounts, PathMap{Host: tmp, Engine: "/mnt/wsl/cfg"})
+	sp := withServices()
+	g, err := Generate(filepath.Join(tmp, "sandbox"), sp, c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := composeMap(t, g.Compose)
+	declared, _ := m["networks"].(map[string]any)
+	internal := func(name string) bool {
+		n, _ := declared[name].(map[string]any)
+		return n["internal"] == true
+	}
+	if !internal(ServicesNetwork) {
+		t.Fatalf("networks = %v; want %s declared internal", declared, ServicesNetwork)
+	}
+	for _, name := range []string{"postgres", "seaweedfs"} {
+		nets := networksOf(m, name)
+		if !slices.Equal(nets, []string{ServicesNetwork}) {
+			t.Errorf("%s is on networks %v; a service is on the internal network alone (no networks means the default one, which has a route out)", name, nets)
+		}
+		for _, n := range nets {
+			if !internal(n) {
+				t.Errorf("%s is on %s, which is not internal", name, n)
+			}
+		}
+	}
+	if fw := networksOf(m, "fw"); !slices.Equal(fw, []string{"default", ServicesNetwork}) {
+		t.Errorf("fw is on networks %v; it keeps the default network for the listed hosts and joins %s to reach the services", fw, ServicesNetwork)
+	}
+	if internal("default") {
+		t.Error("the default network is internal: the firewall could not reach the listed hosts")
+	}
+	if work := svc(m, "work"); work["network_mode"] != "service:fw" || work["networks"] != nil {
+		t.Errorf("work = %v; it stays in the firewall's network namespace and joins no network of its own", work)
+	}
+	if err := Validate(g, sp, c); err != nil {
+		t.Fatalf("Validate() = %v on what Generate wrote", err)
+	}
+	mutate(t, g.Compose, func(m map[string]any) { svc(m, "postgres")["networks"] = []any{"default", ServicesNetwork} })
+	if err := Validate(g, sp, c); err == nil || !strings.Contains(err.Error(), "compose.yaml differs") {
+		t.Errorf("a service put back on the default network: Validate() = %v", err)
+	}
+
+	g2, err := Generate(filepath.Join(tmp, "plain"), spec("/home/ana/ygg/proj"), c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plain := composeMap(t, g2.Compose)
+	if plain["networks"] != nil || svc(plain, "fw")["networks"] != nil || svc(plain, "work")["networks"] != nil {
+		t.Errorf("a sandbox with no services declares networks: %v, fw %v", plain["networks"], svc(plain, "fw")["networks"])
+	}
+}

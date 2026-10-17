@@ -19,7 +19,8 @@ The harness: agent adapters, the devcontainer sandbox driver, policies and the c
   the egress firewall (spec §6).
 - Starts, beside the work container, the services a leaf's realm and the realms of the leaves it
   consumes ask for (a database, object storage), and opens their ports, and only theirs, to the work
-  container through the firewall. Each sandbox starts on the stack layer its spec names, so leaves of
+  container through the firewall. The services sit on an internal network with no route out, which the
+  firewall joins, so none of them can reach the internet for a client. Each sandbox starts on the stack layer its spec names, so leaves of
   different realms differ. A scratch sandbox holds one folder and no git directory: a planner's
   workspace (spec §3.3).
 - Runs checks.

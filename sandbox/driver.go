@@ -302,7 +302,7 @@ done
 echo "processes are still running in the sandbox" >&2
 exit 1`
 
-// Down removes the sandbox's containers and network. It finds them by label, so it works for a
+// Down removes the sandbox's containers and networks. It finds them by label, so it works for a
 // sandbox this process never started, and it is safe to call twice.
 func (d *Driver) Down(ctx context.Context, env gungnir.Env) error {
 	if env.Project == "" {
@@ -325,9 +325,11 @@ func (d *Driver) Down(ctx context.Context, env gungnir.Env) error {
 			errs = append(errs, err)
 		}
 	}
-	if _, err := d.run(ctx, d.Podman, "network", "exists", env.Project+"_default"); err == nil {
-		if _, err := d.run(ctx, d.Podman, "network", "rm", "-f", env.Project+"_default"); err != nil {
-			errs = append(errs, err)
+	for _, n := range []string{"default", ServicesNetwork} {
+		if _, err := d.run(ctx, d.Podman, "network", "exists", env.Project+"_"+n); err == nil {
+			if _, err := d.run(ctx, d.Podman, "network", "rm", "-f", env.Project+"_"+n); err != nil {
+				errs = append(errs, err)
+			}
 		}
 	}
 	return errors.Join(errs...)

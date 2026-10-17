@@ -42,6 +42,12 @@ const (
 	LabelLeaf = "dev.ouroboric.ygg.leaf"
 )
 
+// ServicesNetwork is the compose network a sandbox's services sit on. It is internal: it has no route
+// out, so a service that opens connections at a client's request can't reach past the firewall. The
+// firewall joins it, so the work container, in the firewall's network namespace, reaches the services
+// (review C-1).
+const ServicesNetwork = "services"
+
 // PathMap says that the engine sees the host path Host as Engine.
 type PathMap struct{ Host, Engine string }
 
@@ -114,6 +120,12 @@ func ConfigDir(work string, s gungnir.SandboxSpec) string { return filepath.Join
 type composeFile struct {
 	Name     string             `yaml:"name"`
 	Services map[string]service `yaml:"services"`
+	Networks map[string]network `yaml:"networks,omitempty"`
+}
+
+// network is a compose network. Internal ones have no route out.
+type network struct {
+	Internal bool `yaml:"internal,omitempty"`
 }
 
 type service struct {
@@ -126,6 +138,7 @@ type service struct {
 	CapDrop     []string          `yaml:"cap_drop,omitempty"`
 	SecurityOpt []string          `yaml:"security_opt,omitempty"`
 	NetworkMode string            `yaml:"network_mode,omitempty"`
+	Networks    []string          `yaml:"networks,omitempty"`
 	DependsOn   []string          `yaml:"depends_on,omitempty"`
 	Environment map[string]string `yaml:"environment,omitempty"`
 	Labels      map[string]string `yaml:"labels"`
@@ -212,16 +225,24 @@ func render(dir string, spec gungnir.SandboxSpec, c Config) (map[string][]byte, 
 	// The services a leaf's realm, and the realms of the leaves it consumes, ask for. They run on the
 	// image's own user and command, with no mount, no capability beyond the engine's default set and no
 	// published port: the work container reaches them by name, through the firewall's network, only on
-	// the ports the spec lists (egress.sh).
+	// the ports the spec lists (egress.sh). They sit on the internal ServicesNetwork alone, with no route
+	// out, so none of them can reach the internet for a client; the firewall joins it beside the default
+	// network, which keeps its route to the listed hosts (review C-1).
 	var names []string
 	for _, v := range spec.Services {
 		cf.Services[v.Name] = service{Image: v.Image, PullPolicy: "never", SecurityOpt: []string{"no-new-privileges:true"},
-			Environment: maps.Clone(v.Env), Labels: labels}
+			Networks: []string{ServicesNetwork}, Environment: maps.Clone(v.Env), Labels: labels}
 		names = append(names, v.Name)
 	}
 	slices.Sort(names)
 	fwSvc, workSvc := cf.Services["fw"], cf.Services["work"]
 	fwSvc.DependsOn, workSvc.DependsOn = names, append([]string{"fw"}, names...)
+	if len(names) > 0 {
+		// default is declared too: a compose file that declares one network makes it the default one
+		// for podman-compose, so the firewall's default would otherwise be missing.
+		cf.Networks = map[string]network{"default": {}, ServicesNetwork: {Internal: true}}
+		fwSvc.Networks = []string{"default", ServicesNetwork}
+	}
 	cf.Services["fw"], cf.Services["work"] = fwSvc, workSvc
 	dc := map[string]any{
 		"name": Project(spec), "dockerComposeFile": "compose.yaml", "service": "work",

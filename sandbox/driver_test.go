@@ -277,6 +277,9 @@ func TestDownRemovesByLabelAndRepeats(t *testing.T) {
 	if strings.Count(got, "podman rm -f -t 2 --depend work123 fw456") != 2 || !strings.Contains(got, "network rm -f "+env.Project+"_default") {
 		t.Errorf("Down didn't remove the containers and the network:\n%s", got)
 	}
+	if !strings.Contains(got, "network rm -f "+env.Project+"_"+ServicesNetwork) {
+		t.Errorf("Down didn't remove the services' internal network:\n%s", got)
+	}
 	if err := d.Down(context.Background(), gungnir.Env{}); err == nil {
 		t.Error("Down with no project succeeded")
 	}
