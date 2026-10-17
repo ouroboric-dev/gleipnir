@@ -132,6 +132,16 @@ type service struct {
 	Volumes     []string          `yaml:"volumes,omitempty"`
 }
 
+// workVolumes are the work container's mounts: the leaf read-write and its git dir read-only, mirrored
+// under Root; for a scratch folder, the folder alone.
+func workVolumes(spec gungnir.SandboxSpec, l gungnir.Layout, leaf, git string) []string {
+	vols := []string{leaf + ":" + Root + "/" + l.Leaf + ":Z"}
+	if !spec.Scratch {
+		vols = append(vols, git+":"+Root+"/"+l.GitDir+":ro,Z")
+	}
+	return vols
+}
+
 // Generate writes a sandbox's devcontainer.json, compose.yaml and firewall host list into dir,
 // which must be outside the leaf. The files are the only configuration Up reads: nothing in the leaf
 // can reach them or change them (spec §6.2). Generate doesn't check its own output; Up does, before
@@ -170,9 +180,11 @@ func render(dir string, spec gungnir.SandboxSpec, c Config) (map[string][]byte, 
 	if err != nil {
 		return nil, Generated{}, err
 	}
-	git, err := c.MapPath(spec.GitDir)
-	if err != nil {
-		return nil, Generated{}, err
+	var git string
+	if !spec.Scratch { // a scratch folder is no repo: it has no git dir to mount
+		if git, err = c.MapPath(spec.GitDir); err != nil {
+			return nil, Generated{}, err
+		}
 	}
 	fwDir := filepath.Join(dir, "fw")
 	fwEngine, err := c.MapPath(fwDir)
@@ -194,10 +206,7 @@ func render(dir string, spec gungnir.SandboxSpec, c Config) (map[string][]byte, 
 			CapDrop: []string{"ALL"}, SecurityOpt: []string{"no-new-privileges:true"},
 			NetworkMode: "service:fw", DependsOn: []string{"fw"},
 			Environment: maps.Clone(homeEnv), Labels: labels,
-			Volumes: []string{
-				leaf + ":" + Root + "/" + l.Leaf + ":Z",
-				git + ":" + Root + "/" + l.GitDir + ":ro,Z",
-			},
+			Volumes: workVolumes(spec, l, leaf, git),
 		},
 	}}
 	// The services a leaf's realm, and the realms of the leaves it consumes, ask for. They run on the
