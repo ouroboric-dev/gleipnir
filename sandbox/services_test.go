@@ -1,6 +1,7 @@
 package sandbox
 
 import (
+	"context"
 	"errors"
 	"os"
 	"path/filepath"
@@ -140,5 +141,37 @@ func TestTheFirewallIsToldWhichServicePortsToOpen(t *testing.T) {
 	}
 	if b, err := os.ReadFile(g2.Services); err != nil || len(b) != 0 {
 		t.Errorf("fw/services for a sandbox with no services = %q, %v; want an empty file", b, err)
+	}
+}
+
+func TestUpRefusesAServiceImageThatWasNeverPulled(t *testing.T) {
+	d, log, sp := fakeEngine(t)
+	sp.Services = []gungnir.Service{{Name: "postgres", Image: pgImage, Ports: []int{5432}}}
+	t.Setenv("STUB_MISSING", pgImage)
+	_, err := d.Up(context.Background(), sp)
+	if !errors.Is(err, ErrNoImage) || !strings.Contains(err.Error(), pgImage) || !strings.Contains(err.Error(), "ygg sandbox build") {
+		t.Fatalf("Up() = %v; want ErrNoImage naming the service's image and the command that pulls it", err)
+	}
+	if got := logOf(t, log); strings.Contains(got, "devcontainer up") {
+		t.Errorf("the sandbox was started although a service image was missing:\n%s", got)
+	}
+}
+
+func TestPullFetchesAnImageWithTheIsolatedAuthAndOnlyADigestPinnedOne(t *testing.T) {
+	d, log, _ := fakeEngine(t)
+	if err := d.Pull(context.Background(), pgImage); err != nil {
+		t.Fatalf("Pull() = %v", err)
+	}
+	got := logOf(t, log)
+	if !strings.Contains(got, "podman pull -q --authfile "+filepath.Join(d.work, "registry-auth", "auth.json")+" "+pgImage) {
+		t.Errorf("the engine calls:\n%s", got)
+	}
+	if strings.Contains(got, "docker.sock") {
+		t.Errorf("a call used the shell's engine:\n%s", got)
+	}
+	for _, bad := range []string{"docker.io/library/postgres:17.2", "postgres", "", "docker.io/library/postgres@sha256:short"} {
+		if err := d.Pull(context.Background(), bad); err == nil {
+			t.Errorf("Pull(%q) = nil; an image that is not pinned by digest is not pulled", bad)
+		}
 	}
 }
