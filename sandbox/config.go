@@ -57,6 +57,15 @@ type Config struct {
 	GID    int
 }
 
+// ImagesOf returns the images a sandbox of spec starts: those of the spec's stack layer, so each leaf
+// runs on its own realm's stack, or the driver's own when the spec names none.
+func (c Config) ImagesOf(s gungnir.SandboxSpec) Images {
+	if s.Stack != "" {
+		return ImagesFor(s.Stack)
+	}
+	return c.Images
+}
+
 // MapPath returns the path the engine sees for host path p. With no mounts configured, the engine
 // is taken to see the host's paths. With mounts, a path outside all of them is an error: the
 // engine could not mount it.
@@ -148,7 +157,8 @@ func render(dir string, spec gungnir.SandboxSpec, c Config) (map[string][]byte, 
 	if err := spec.Validate(); err != nil {
 		return nil, Generated{}, err
 	}
-	if c.Images.Work == "" || c.Images.Firewall == "" || c.UID <= 0 || c.GID <= 0 {
+	images := c.ImagesOf(spec)
+	if images.Work == "" || images.Firewall == "" || c.UID <= 0 || c.GID <= 0 {
 		return nil, Generated{}, errors.New("the driver needs both images and a non-root uid and gid")
 	}
 	for _, p := range []string{dir} {
@@ -173,13 +183,13 @@ func render(dir string, spec gungnir.SandboxSpec, c Config) (map[string][]byte, 
 	labels := map[string]string{LabelRun: spec.Run, LabelLeaf: spec.Name}
 	cf := composeFile{Name: Project(spec), Services: map[string]service{
 		"fw": {
-			Image: c.Images.Firewall, PullPolicy: "never", Command: []string{"sh", "/etc/ygg-fw/egress.sh", "/etc/ygg-fw/hosts", "/etc/ygg-fw/services"},
+			Image: images.Firewall, PullPolicy: "never", Command: []string{"sh", "/etc/ygg-fw/egress.sh", "/etc/ygg-fw/hosts", "/etc/ygg-fw/services"},
 			// root of its own user namespace: keep-id alone would run it as the operator, who can't write rules
 			User: "0:0", UsernsMode: "keep-id", CapAdd: []string{"NET_ADMIN"}, Labels: labels,
 			Volumes: []string{fwEngine + ":/etc/ygg-fw:ro,Z"},
 		},
 		"work": {
-			Image: c.Images.Work, PullPolicy: "never", Command: []string{"sleep", "infinity"},
+			Image: images.Work, PullPolicy: "never", Command: []string{"sleep", "infinity"},
 			User: fmt.Sprintf("%d:%d", c.UID, c.GID), UsernsMode: "keep-id",
 			CapDrop: []string{"ALL"}, SecurityOpt: []string{"no-new-privileges:true"},
 			NetworkMode: "service:fw", DependsOn: []string{"fw"},

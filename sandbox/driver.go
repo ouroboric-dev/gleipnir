@@ -107,7 +107,8 @@ func (d *Driver) Up(ctx context.Context, spec gungnir.SandboxSpec) (gungnir.Env,
 	if err := Validate(g, spec, d.cfg); err != nil {
 		return gungnir.Env{}, err
 	}
-	for _, img := range []string{d.cfg.Images.Work, d.cfg.Images.Firewall} {
+	imgs := d.cfg.ImagesOf(spec)
+	for _, img := range []string{imgs.Work, imgs.Firewall} {
 		if _, err := d.run(ctx, d.Podman, "image", "exists", img); err != nil {
 			return gungnir.Env{}, fmt.Errorf("%w: %s (run ygg sandbox build)", ErrNoImage, img)
 		}
