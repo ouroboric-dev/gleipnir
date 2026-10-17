@@ -30,7 +30,7 @@ func TestTheFactoryLayerIsPinned(t *testing.T) {
 	if !strings.Contains(NodeImage, "@sha256:") || len(GitleaksSHA256) != 64 {
 		t.Error("a base image or the gitleaks archive isn't pinned by digest")
 	}
-	for _, want := range []string{"sha256sum -c", "npm install -g --prefix /opt/ygg", "DISABLE_AUTOUPDATER=1", "AS fw", "AS work",
+	for _, want := range []string{"sha256sum -c", "npm install -g --prefix /opt/ygg", "DISABLE_AUTOUPDATER=1", "AS fw", "AS work", "iptables dnsmasq-base",
 		"the stack image needs bash, timeout and git"} {
 		if !strings.Contains(containerfile, want) {
 			t.Errorf("the Containerfile lacks %q", want)

@@ -156,7 +156,9 @@ func TestSandboxDriverOnARealEngine(t *testing.T) {
 	})
 	t.Run("the network is closed but for the listed hosts", func(t *testing.T) {
 		want("an open address", 124, "", "timeout", "4", "bash", "-c", "exec 3<>/dev/tcp/1.1.1.1/443")
-		want("example.com", 124, "", "timeout", "4", "bash", "-c", "exec 3<>/dev/tcp/example.com/80")
+		// A name that is not listed does not resolve at all: the firewall's resolver answers only the listed
+		// hosts and the services (change realm-content), so there is not even an address to connect to.
+		want("example.com", 2, "", "timeout", "4", "getent", "hosts", "example.com")
 		want("a listed host", 0, "", "timeout", "10", "bash", "-c", "exec 3<>/dev/tcp/api.anthropic.com/443")
 		want("a listed host's other port", 124, "", "timeout", "4", "bash", "-c", "exec 3<>/dev/tcp/api.anthropic.com/80")
 	})

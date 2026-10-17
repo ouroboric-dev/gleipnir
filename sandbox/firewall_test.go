@@ -26,7 +26,17 @@ func stubs(t *testing.T) (bin, log string) {
   postgres) echo "10.89.0.5 STREAM postgres" ;;
   seaweedfs) echo "10.89.0.6 STREAM seaweedfs" ;;
   late) n="$(cat "$STUB_LATE" 2>/dev/null || echo 0)"; echo $((n+1)) > "$STUB_LATE"; [ "$n" -ge 2 ] && echo "10.89.0.7 STREAM late" ;;
+  rotating.example.com) n="$(cat "$STUB_ROTATE" 2>/dev/null || echo 0)"; echo $((n+1)) > "$STUB_ROTATE"; echo "10.0.0.$((n+1)) STREAM rotating.example.com" ;;
 esac
+`)
+	// dnsmasq logs how it was called and the configuration it was given, writes its pid file as the real one
+	// does once it listens, and stays up a moment, or fails to start when STUB_DNSMASQ_FAIL is set.
+	write("dnsmasq", `echo "dnsmasq $*" >> "$STUB_LOG"
+[ -z "$STUB_DNSMASQ_FAIL" ] || exit 1
+conf=""; for a in "$@"; do case "$a" in --conf-file=*) conf="${a#--conf-file=}" ;; esac; done
+sed 's/^/conf: /' "$conf" >> "$STUB_LOG"
+echo "$$" > "$(sed -n 's/^pid-file=//p' "$conf")"
+exec /bin/sleep 2
 `)
 	write("sleep", "exit 0\n")
 	return bin, log
@@ -57,7 +67,7 @@ func runEgressWithServices(t *testing.T, hosts, services string, extra ...string
 		args = append(args, servicesFile)
 	}
 	cmd := exec.Command("sh", args...)
-	cmd.Env = append([]string{"PATH=" + bin + ":" + os.Getenv("PATH"), "STUB_LOG=" + log, "STUB_LATE=" + filepath.Join(dir, "late"),
+	cmd.Env = append([]string{"PATH=" + bin + ":" + os.Getenv("PATH"), "STUB_LOG=" + log, "STUB_LATE=" + filepath.Join(dir, "late"), "STUB_ROTATE=" + filepath.Join(dir, "rotate"),
 		"YGG_FW_STATE=" + state, "YGG_ONCE=1"}, extra...)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
@@ -153,5 +163,70 @@ func TestEgressRefusesToOpenWithoutAService(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(state, "ready")); err == nil {
 		t.Error("a failed firewall said it was ready")
+	}
+}
+
+func TestEgressAnswersDNSItselfForTheListedHostsAndTheServicesAndNothingElse(t *testing.T) {
+	calls, state, err := runEgressWithServices(t, "api.anthropic.com\nproxy.golang.org\n", "postgres 5432\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	hosts, _ := os.ReadFile(filepath.Join(state, "hosts"))
+	for _, want := range []string{"160.79.104.10 api.anthropic.com\n", "142.250.1.1 proxy.golang.org\n", "142.250.1.2 proxy.golang.org\n"} {
+		if !strings.Contains(string(hosts), want) {
+			t.Errorf("the answers lack %q:\n%s", want, hosts)
+		}
+	}
+	for _, want := range []string{"conf: port=5353\n", "conf: listen-address=127.0.0.1\n", "conf: no-resolv\n", "conf: no-hosts\n", "conf: cache-size=0\n",
+		"conf: addn-hosts=" + filepath.Join(state, "hosts") + "\n", "conf: server=/postgres/10.89.0.1\n", "conf: user=nobody\n"} {
+		if !strings.Contains(calls, want) {
+			t.Errorf("dnsmasq's configuration lacks %q:\n%s", want, calls)
+		}
+	}
+	if strings.Contains(calls, "conf: server=/api.anthropic.com") || strings.Contains(calls, "server=10.89.0.1") {
+		t.Errorf("dnsmasq forwards more than the services' names:\n%s", calls)
+	}
+	// What the work container asks is answered here: every DNS query of a process that is neither root (the
+	// script's own lookups) nor nobody (dnsmasq's) goes to dnsmasq's port.
+	for _, want := range []string{
+		"iptables -t nat -A OUTPUT -p udp --dport 53 -m owner --uid-owner 0 -j RETURN",
+		"iptables -t nat -A OUTPUT -p udp --dport 53 -m owner --uid-owner 65534 -j RETURN",
+		"iptables -A OUTPUT -p udp -d 127.0.0.1 --dport 5353 -j ACCEPT",
+		"iptables -A OUTPUT -p tcp -d 127.0.0.1 --dport 5353 -j ACCEPT",
+		"iptables -t nat -A OUTPUT -p udp --dport 53 -j REDIRECT --to-ports 5353",
+		"iptables -t nat -A OUTPUT -p tcp --dport 53 -j REDIRECT --to-ports 5353",
+	} {
+		if !strings.Contains(calls, want+"\n") {
+			t.Errorf("the rules lack %q:\n%s", want, calls)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(state, "ready")); err != nil {
+		t.Error("the firewall never said it was ready")
+	}
+}
+
+func TestEgressRefusesToOpenWhenItCannotAnswerDNS(t *testing.T) {
+	_, state, err := runEgress(t, "api.anthropic.com\n", "STUB_DNSMASQ_FAIL=1")
+	if err == nil {
+		t.Fatal("egress.sh succeeded without a resolver for the work container")
+	}
+	if _, err := os.Stat(filepath.Join(state, "ready")); err == nil {
+		t.Error("a firewall with no resolver said it was ready")
+	}
+}
+
+func TestEgressAnswersWhatItAllowsAfterARefreshToo(t *testing.T) {
+	calls, state, err := runEgress(t, "rotating.example.com\n", "YGG_ONCE=0", "YGG_MAX_REFRESH=1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	hosts, _ := os.ReadFile(filepath.Join(state, "hosts"))
+	if string(hosts) != "10.0.0.2 rotating.example.com\n" {
+		t.Errorf("after a refresh the answers are %q, want the new address alone", hosts)
+	}
+	for _, want := range []string{"iptables -A YGG_HOSTS_A -p tcp -d 10.0.0.1 --dport 443 -j ACCEPT\n", "iptables -A YGG_HOSTS_B -p tcp -d 10.0.0.2 --dport 443 -j ACCEPT\n"} {
+		if !strings.Contains(calls, want) {
+			t.Errorf("the rules lack %q:\n%s", want, calls)
+		}
 	}
 }
