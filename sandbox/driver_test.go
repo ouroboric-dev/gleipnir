@@ -35,6 +35,9 @@ echo "env host=${CONTAINER_HOST:-} auth=${REGISTRY_AUTH_FILE:-} docker=${DOCKER_
 case "$1" in
   image) case " $STUB_MISSING " in *" $3 "*) exit 1 ;; esac; exit 0 ;;
   network) [ "$2" = exists ] && exit 0; exit 0 ;;
+  run) [ -z "$STUB_RUN_SLEEP" ] || exec sleep "$STUB_RUN_SLEEP"
+    exit "${STUB_RUN_EXIT:-0}" ;;
+  rm) exit "${STUB_RM_EXIT:-0}" ;;
   ps) [ -z "$STUB_PS_SLEEP" ] || exec sleep "$STUB_PS_SLEEP"
     case "$*" in *service=fw*) echo fw456 ;; *) echo work123; echo fw456 ;; esac; exit 0 ;;
   exec)
