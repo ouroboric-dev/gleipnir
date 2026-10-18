@@ -1,0 +1,15 @@
+default: true
+# gofmt requires tabs, and the plan tools copy plan code verbatim.
+MD010:
+  code_blocks: false
+MD013: false
+MD024:
+  siblings_only: true
+MD025:
+  front_matter_title: ""
+# The docs standard prescribes <picture> for themed images, and the org profile opens with <img>.
+MD033:
+  allowed_elements: [picture, source, img]
+# Journal entries, PR templates, Claude skill files and the org profile banner open without an H1 on purpose;
+# every other doc's title is checked by the docs standard's front matter rule.
+MD041: false
