@@ -70,11 +70,6 @@ func TestTheReportNamesFilesByTheirPathInTheLeaf(t *testing.T) {
 	}
 }
 
-// The script scans exactly the files it is given, as git would commit them: a symlink as the name
-// it points at, never the file there. Nothing in the tree, and no tool on the sandbox's PATH, shapes
-// the scan: gitleaks runs from its pinned path with the factory's config, and no ignore file
-// applies. The stand-in gitleaks logs its arguments and the tree it was given, so the test needs
-// only bash.
 // The script the sandbox runs is the reviewed one, byte for byte: a change to the template that
 // changes what it renders shows here. testdata/scan.sh.golden is the rendering with the pinned
 // gitleaks and config.
@@ -88,6 +83,11 @@ func TestTheScanRendersTheReviewedScript(t *testing.T) {
 	}
 }
 
+// The script scans exactly the files it is given, as git would commit them: a symlink as the name
+// it points at, never the file there. Nothing in the tree, and no tool on the sandbox's PATH, shapes
+// the scan: gitleaks runs from its pinned path with the factory's config, and no ignore file
+// applies. The stand-in gitleaks logs its arguments and the tree it was given, so the test needs
+// only bash.
 func TestTheScanReadsOnlyTheFilesItIsGivenWithThePinnedConfig(t *testing.T) {
 	leaf, bin, logs := t.TempDir(), t.TempDir(), t.TempDir()
 	write := func(p, text string) {
