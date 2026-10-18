@@ -29,6 +29,15 @@ The harness: agent adapters, the devcontainer sandbox driver, policies and the c
   from images pinned by digest and the Containerfile's own stages, with the isolated registry auth, and
   tagged with a hash of the context. The check scripts a realm bakes into its stack are read-only for the
   agent. A service may take the command its pack gives it, for an image that does nothing without one.
+- Grades a build (`Grade`, spec §11): builds the image of a benchmark task from its `environment/` folder
+  (`BuildGrader`, with the rules of `BuildStack`, and a tag that is a hash of the folder), then runs
+  `bash /tests/test.sh` in one container of that image. The container has no network but loopback and three
+  mounts: `/app` (the project, read and write), `/tests` (the suite, read only) and `/logs/verifier` (an empty
+  folder for the results). It has the label `ygg.grader=<run id>`, and it is always removed, after a pass, a
+  failure, a timeout and a cancel. `Grade` refuses a path it could not mount safely before it runs
+  anything, and a `podman run` that exits 125, 126 or 127 is an error, not a result. An empty memory limit and
+  zero CPUs mean no limit, for an engine that cannot apply one. `Grade` reads no result: the score is
+  Odin's. `GraderLeftovers` finds a container a killed run left, by its label, and `RemoveGrader` removes it.
 - Runs checks.
 
 ## Depends on
