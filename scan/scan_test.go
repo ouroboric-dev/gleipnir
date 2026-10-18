@@ -75,6 +75,19 @@ func TestTheReportNamesFilesByTheirPathInTheLeaf(t *testing.T) {
 // the scan: gitleaks runs from its pinned path with the factory's config, and no ignore file
 // applies. The stand-in gitleaks logs its arguments and the tree it was given, so the test needs
 // only bash.
+// The script the sandbox runs is the reviewed one, byte for byte: a change to the template that
+// changes what it renders shows here. testdata/scan.sh.golden is the rendering with the pinned
+// gitleaks and config.
+func TestTheScanRendersTheReviewedScript(t *testing.T) {
+	want, err := os.ReadFile("testdata/scan.sh.golden")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := script(Gitleaks); got != string(want) {
+		t.Errorf("the rendered scan is\n%s\nwant testdata/scan.sh.golden:\n%s", got, want)
+	}
+}
+
 func TestTheScanReadsOnlyTheFilesItIsGivenWithThePinnedConfig(t *testing.T) {
 	leaf, bin, logs := t.TempDir(), t.TempDir(), t.TempDir()
 	write := func(p, text string) {

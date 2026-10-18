@@ -28,9 +28,11 @@ const pinnedConfig = `# The factory's gitleaks config: the default rules of the 
 useDefault = true
 `
 
-// script is the scan with the gitleaks at path. Tests run it on the host with a stand-in.
+// script is the scan with the gitleaks at path. Tests run it on the host with a stand-in. The
+// template's @CONFIG@ line ends with the newline the config's own last one would repeat, so the
+// heredoc's terminator stays on a line of its own and the config arrives as pinned.
 func script(gitleaks string) string {
-	return strings.NewReplacer("@GITLEAKS@", gitleaks, "@CONFIG@", pinnedConfig).Replace(template)
+	return strings.NewReplacer("@GITLEAKS@", gitleaks, "@CONFIG@", strings.TrimSuffix(pinnedConfig, "\n")).Replace(template)
 }
 
 // Argv is the command the scan runs in the sandbox, by an absolute bash: a fake sandbox knows the

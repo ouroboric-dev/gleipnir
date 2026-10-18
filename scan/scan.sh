@@ -15,7 +15,8 @@ d="$(mktemp -d)"
 trap 'rm -rf -- "$d"' EXIT
 mkdir -- "$d/cfg" "$d/cfg/ignore" "$d/src" "$d/src/t"
 cat > "$d/cfg/gitleaks.toml" <<'TOML'
-@CONFIG@TOML
+@CONFIG@
+TOML
 while IFS= read -r -d '' f; do
   case "$f" in
     '' | /* | .. | ../* | */.. | */../*) echo "scan.sh: $f is not a path in the leaf" >&2; exit 2 ;;
