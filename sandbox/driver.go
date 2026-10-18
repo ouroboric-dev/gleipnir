@@ -25,7 +25,7 @@ type Driver struct {
 	Devcontainer string        // the devcontainer CLI; "devcontainer" by default
 	Compose      string        // the compose provider; "podman-compose" by default
 	ReadyTimeout time.Duration // how long Up waits for the firewall; a minute by default
-	UpTimeout    time.Duration // how long devcontainer up may take; five minutes by default (a first start hung for eight in the spike)
+	UpTimeout    time.Duration // how long one devcontainer up attempt may take; two minutes by default (a good start takes under 30 s; one that hangs is stopped and tried once more, so Up may take twice this)
 	DownTimeout  time.Duration // how long Down may take; two minutes by default
 
 	cfg    Config
@@ -58,7 +58,7 @@ func New(socket string, cfg Config, work string) (*Driver, error) {
 	if err := os.WriteFile(filepath.Join(auth, "auth.json"), []byte("{}\n"), 0o600); err != nil {
 		return nil, err
 	}
-	return &Driver{Podman: "podman", Devcontainer: "devcontainer", Compose: "podman-compose", ReadyTimeout: time.Minute, UpTimeout: 5 * time.Minute, DownTimeout: 2 * time.Minute,
+	return &Driver{Podman: "podman", Devcontainer: "devcontainer", Compose: "podman-compose", ReadyTimeout: time.Minute, UpTimeout: 2 * time.Minute, DownTimeout: 2 * time.Minute,
 		cfg: cfg, engine: socket, work: work, auth: auth}, nil
 }
 
@@ -140,14 +140,26 @@ func (d *Driver) Up(ctx context.Context, spec gungnir.SandboxSpec) (gungnir.Env,
 	}
 	project := Project(spec)
 	env := gungnir.Env{Name: spec.Name, Project: project, Workdir: Root + "/" + spec.Layout().Leaf}
-	upCtx, cancel := context.WithTimeout(ctx, d.UpTimeout)
-	defer cancel()
-	out, err := d.run(upCtx, d.Devcontainer, "up", "--docker-path", d.Podman, "--docker-compose-path", d.Compose,
-		"--workspace-folder", spec.Leaf, "--config", g.Devcontainer, "--user-data-folder", filepath.Join(g.Dir, "data"),
-		"--skip-post-create", "--default-user-env-probe", "none", "--mount-workspace-git-root=false", "--log-format", "json")
-	if err != nil {
+	// A start sometimes hangs at compose up for no known cause and the next one succeeds in
+	// seconds (sandbox spike, item 1): an attempt that times out is cleaned up and tried once more.
+	var out []byte
+	for attempt := 1; ; attempt++ {
+		upCtx, cancel := context.WithTimeout(ctx, d.UpTimeout)
+		out, err = d.run(upCtx, d.Devcontainer, "up", "--docker-path", d.Podman, "--docker-compose-path", d.Compose,
+			"--workspace-folder", spec.Leaf, "--config", g.Devcontainer, "--user-data-folder", filepath.Join(g.Dir, "data"),
+			"--skip-post-create", "--default-user-env-probe", "none", "--mount-workspace-git-root=false", "--log-format", "json")
+		timedOut := err != nil && upCtx.Err() != nil && ctx.Err() == nil
+		cancel()
+		if err == nil {
+			break
+		}
 		d.Down(context.WithoutCancel(ctx), env)
-		return gungnir.Env{}, err
+		if !timedOut || attempt == 2 {
+			if timedOut {
+				err = fmt.Errorf("devcontainer up timed out after %s on the second attempt too: %w", d.UpTimeout, err)
+			}
+			return gungnir.Env{}, err
+		}
 	}
 	if env.Container, err = containerID(out); err != nil {
 		d.Down(context.WithoutCancel(ctx), env)

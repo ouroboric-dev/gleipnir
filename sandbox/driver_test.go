@@ -365,6 +365,79 @@ func TestUpGivesUpOnADevcontainerThatHangs(t *testing.T) {
 	}
 }
 
+// scriptDevcontainer replaces the fake devcontainer with one whose body runs after it logs its call;
+// n is the number of devcontainer calls so far, this one included.
+func scriptDevcontainer(t *testing.T, d *Driver, body string) {
+	t.Helper()
+	p := filepath.Join(t.TempDir(), "devcontainer")
+	script := "#!/bin/sh\necho \"devcontainer $*\" >> \"$STUB_LOG\"\nn=$(grep -c '^devcontainer' \"$STUB_LOG\")\n" + body
+	if err := os.WriteFile(p, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	d.Devcontainer = p
+}
+
+func upCalls(t *testing.T, log string) int {
+	return strings.Count(logOf(t, log), "devcontainer up")
+}
+
+const stubSuccess = "echo '{\"outcome\":\"success\",\"containerId\":\"work123\"}'\n"
+
+func TestUpRetriesAHungDevcontainerOnce(t *testing.T) {
+	d, log, sp := fakeEngine(t)
+	scriptDevcontainer(t, d, "[ \"$n\" -ne 1 ] || sleep 30\n"+stubSuccess)
+	d.UpTimeout = 500 * time.Millisecond
+	env, err := d.Up(context.Background(), sp)
+	if err != nil || env.Container != "work123" {
+		t.Fatalf("Up() = %+v, %v; want success on the second attempt", env, err)
+	}
+	if n := upCalls(t, log); n != 2 {
+		t.Errorf("devcontainer up ran %d times; want 2", n)
+	}
+	if !strings.Contains(logOf(t, log), "podman rm -f -t 2") {
+		t.Error("the hung attempt was not cleaned up before the retry")
+	}
+}
+
+func TestUpGivesUpAfterTwoHungAttempts(t *testing.T) {
+	d, log, sp := fakeEngine(t)
+	scriptDevcontainer(t, d, "sleep 30\n")
+	d.UpTimeout = 300 * time.Millisecond
+	_, err := d.Up(context.Background(), sp)
+	if err == nil || !strings.Contains(err.Error(), "second attempt") {
+		t.Errorf("Up() = %v; want an error naming the second attempt", err)
+	}
+	if n := upCalls(t, log); n != 2 {
+		t.Errorf("devcontainer up ran %d times; want 2", n)
+	}
+}
+
+func TestUpDoesNotRetryAFailureThatIsNotATimeout(t *testing.T) {
+	d, log, sp := fakeEngine(t)
+	scriptDevcontainer(t, d, "echo broken >&2\nexit 1\n")
+	_, err := d.Up(context.Background(), sp)
+	if err == nil || strings.Contains(err.Error(), "second attempt") {
+		t.Errorf("Up() = %v; want the plain failure", err)
+	}
+	if n := upCalls(t, log); n != 1 {
+		t.Errorf("devcontainer up ran %d times; want 1", n)
+	}
+}
+
+func TestUpDoesNotRetryWhenTheCallerCancels(t *testing.T) {
+	d, log, sp := fakeEngine(t)
+	scriptDevcontainer(t, d, "sleep 30\n")
+	d.UpTimeout = time.Minute
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+	if _, err := d.Up(ctx, sp); err == nil {
+		t.Error("Up() succeeded")
+	}
+	if n := upCalls(t, log); n != 1 {
+		t.Errorf("devcontainer up ran %d times; want 1", n)
+	}
+}
+
 // Backlog B-017: podman's own failure is an error, never the command's exit code.
 func TestExecReportsAMissingContainerAsAnError(t *testing.T) {
 	d, _, sp := fakeEngine(t)
