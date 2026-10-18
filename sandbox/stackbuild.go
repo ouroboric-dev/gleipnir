@@ -47,19 +47,26 @@ func (d *Driver) BuildStack(ctx context.Context, ref, dir, target string) (built
 	if _, err := d.run(ctx, d.Podman, "image", "exists", ref); err == nil {
 		return false, nil
 	}
-	for _, base := range bases {
-		if _, err := d.run(ctx, d.Podman, "pull", "-q", "--authfile", filepath.Join(d.auth, "auth.json"), base); err != nil {
-			return false, err
-		}
-	}
-	args := []string{"build", "--pull=never", "-t", ref, "-f", filepath.Join(dir, "Containerfile")}
-	if target != "" {
-		args = append(args, "--target", target)
-	}
-	if _, err := d.run(ctx, d.Podman, append(args, dir)...); err != nil {
+	if err := d.pullAndBuild(ctx, ref, filepath.Join(dir, "Containerfile"), dir, target, bases); err != nil {
 		return false, err
 	}
 	return true, nil
+}
+
+// pullAndBuild pulls every base with the isolated registry auth, then builds the context at dir from the
+// Containerfile file, tagged ref, with a build that never pulls.
+func (d *Driver) pullAndBuild(ctx context.Context, ref, file, dir, target string, bases []string) error {
+	for _, base := range bases {
+		if _, err := d.run(ctx, d.Podman, "pull", "-q", "--authfile", filepath.Join(d.auth, "auth.json"), base); err != nil {
+			return err
+		}
+	}
+	args := []string{"build", "--pull=never", "-t", ref, "-f", file}
+	if target != "" {
+		args = append(args, "--target", target)
+	}
+	_, err := d.run(ctx, d.Podman, append(args, dir)...)
+	return err
 }
 
 // containerfileBases returns the external images a Containerfile starts from, once each, and the names of
