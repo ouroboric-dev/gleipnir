@@ -3,7 +3,7 @@
 The harness: agent adapters, the devcontainer sandbox driver, policies and the check runner.
 
 Follow the Yggdrasil invariants:
-https://github.com/ouroboric-dev/yggdrasil/blob/main/AGENTS.md#invariants
+<https://github.com/ouroboric-dev/yggdrasil/blob/main/AGENTS.md#invariants>
 This file only adds rules for this repo.
 
 ## This repo

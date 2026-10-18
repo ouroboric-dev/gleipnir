@@ -1,0 +1,4 @@
+# The shellcheck-py hook passes no -x, so SC1091 fires when a sourced file is not among the hook's
+# inputs (a commit that changes only the script that sources it), even with source-path directives.
+# This makes shellcheck follow and check sourced files: stricter, not looser.
+external-sources=true

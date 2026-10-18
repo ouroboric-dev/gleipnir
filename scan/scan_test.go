@@ -70,6 +70,19 @@ func TestTheReportNamesFilesByTheirPathInTheLeaf(t *testing.T) {
 	}
 }
 
+// The script the sandbox runs is the reviewed one, byte for byte: a change to the template that
+// changes what it renders shows here. testdata/scan.sh.golden is the rendering with the pinned
+// gitleaks and config.
+func TestTheScanRendersTheReviewedScript(t *testing.T) {
+	want, err := os.ReadFile("testdata/scan.sh.golden")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := script(Gitleaks); got != string(want) {
+		t.Errorf("the rendered scan is\n%s\nwant testdata/scan.sh.golden:\n%s", got, want)
+	}
+}
+
 // The script scans exactly the files it is given, as git would commit them: a symlink as the name
 // it points at, never the file there. Nothing in the tree, and no tool on the sandbox's PATH, shapes
 // the scan: gitleaks runs from its pinned path with the factory's config, and no ignore file
