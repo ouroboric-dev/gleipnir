@@ -20,3 +20,16 @@ func TestTheArchitecturePageDescribesGrade(t *testing.T) {
 		}
 	}
 }
+
+// A sandbox with no stack is the factory layer on the Node image (scratch sessions run on it).
+func TestTheArchitecturePageDescribesASandboxWithNoStack(t *testing.T) {
+	b, err := os.ReadFile(filepath.Join("..", "docs", "architecture.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"FactoryImages", "no stack"} {
+		if !strings.Contains(string(b), want) {
+			t.Errorf("docs/architecture.md does not mention %q", want)
+		}
+	}
+}

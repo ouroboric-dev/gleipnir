@@ -249,3 +249,51 @@ func asFound(err error, target **scan.FoundError) bool {
 	}
 	return ok
 }
+
+// A scratch sandbox with no stack runs on the factory layer alone, on the Node image: the agent CLIs are
+// there, and the firewall's host list is the egress the spec gives and nothing more.
+func TestAScratchSandboxWithNoStackRunsTheAgentCLIs(t *testing.T) {
+	socket, tree, engineTree := itEnv(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 35*time.Minute)
+	defer cancel()
+	cfg := Config{Mounts: []PathMap{{Host: tree, Engine: engineTree}}, Images: FactoryImages(), UID: os.Getuid(), GID: os.Getgid()}
+	work, err := os.MkdirTemp(tree, "work-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(work) })
+	d, err := New(socket, cfg, work)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("building the factory stack and layer (a few minutes)")
+	if _, err := d.BuildFactory(ctx); err != nil {
+		t.Fatalf("BuildFactory() = %v", err)
+	}
+	parent, err := os.MkdirTemp(tree, "scratch-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(parent) })
+	folder := filepath.Join(parent, "scratch", "design")
+	if err := os.MkdirAll(folder, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	egress := []string{"api.anthropic.com", "api.openai.com"}
+	spec := gungnir.SandboxSpec{Run: "20261019-130000-a1b2c3", Name: "scratch/design", Scratch: true, Parent: parent, Leaf: folder, Egress: egress}
+	env, err := d.Up(ctx, spec)
+	if err != nil {
+		t.Fatalf("Up() = %v", err)
+	}
+	t.Cleanup(func() { d.Down(context.Background(), env) })
+	if code, out := inSandbox(t, ctx, d, env, "bash", "-c", "command -v node claude opencode git timeout"); code != 0 {
+		t.Errorf("the agent CLIs: exit %d, %q", code, out)
+	}
+	raw, err := os.ReadFile(filepath.Join(ConfigDir(work, spec), "fw", "hosts"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Fields(string(raw)); strings.Join(got, "|") != strings.Join(egress, "|") {
+		t.Errorf("the firewall's host list = %q, want exactly %q", got, egress)
+	}
+}
