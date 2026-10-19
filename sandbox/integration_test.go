@@ -268,7 +268,7 @@ func TestAScratchSandboxWithNoStackRunsTheAgentCLIs(t *testing.T) {
 	}
 	t.Logf("building the factory stack and layer (a few minutes)")
 	if _, err := d.BuildFactory(ctx); err != nil {
-		t.Fatalf("Build() = %v", err)
+		t.Fatalf("BuildFactory() = %v", err)
 	}
 	parent, err := os.MkdirTemp(tree, "scratch-")
 	if err != nil {
@@ -276,7 +276,9 @@ func TestAScratchSandboxWithNoStackRunsTheAgentCLIs(t *testing.T) {
 	}
 	t.Cleanup(func() { os.RemoveAll(parent) })
 	folder := filepath.Join(parent, "scratch", "design")
-	os.MkdirAll(folder, 0o755)
+	if err := os.MkdirAll(folder, 0o755); err != nil {
+		t.Fatal(err)
+	}
 	egress := []string{"api.anthropic.com", "api.openai.com"}
 	spec := gungnir.SandboxSpec{Run: "20261019-130000-a1b2c3", Name: "scratch/design", Scratch: true, Parent: parent, Leaf: folder, Egress: egress}
 	env, err := d.Up(ctx, spec)

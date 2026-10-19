@@ -102,7 +102,8 @@ func (d *Driver) Build(ctx context.Context, stack string) (Images, error) {
 	return d.build(ctx, stack, false)
 }
 
-// build is Build; nodePulled says the caller has just pulled the Node image.
+// build is Build; nodePulled says the caller has just pulled the Node image, and may be true only straight
+// after pull NodeImage, as in BuildFactory.
 func (d *Driver) build(ctx context.Context, stack string, nodePulled bool) (Images, error) {
 	imgs := ImagesFor(stack)
 	ctxDir, err := os.MkdirTemp(d.work, "build-")
