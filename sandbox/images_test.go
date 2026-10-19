@@ -93,3 +93,44 @@ func TestBuildRefusesABuiltStackThatWasNotBuilt(t *testing.T) {
 		t.Errorf("the layers were built on a stack that is missing:\n%s", got)
 	}
 }
+
+func TestBuildFactoryBuildsTheFactoryStackThenTheLayerAndPullsTheNodeImageOnce(t *testing.T) {
+	d, log, _ := fakeEngine(t)
+	imgs, err := d.BuildFactory(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if imgs != FactoryImages() {
+		t.Errorf("BuildFactory() = %+v, want %+v", imgs, FactoryImages())
+	}
+	got := logOf(t, log)
+	if n := strings.Count(got, "podman pull -q --authfile "+d.auth+"/auth.json "+NodeImage); n != 1 {
+		t.Errorf("the Node image was pulled %d times, want once:\n%s", n, got)
+	}
+	for _, want := range []string{"podman build --pull=never -t " + FactoryStack, "--build-arg NODE_IMAGE=" + NodeImage,
+		"podman image exists " + FactoryStack, "--pull=never --target fw -t " + FactoryImages().Firewall, "--pull=never --target work -t " + FactoryImages().Work,
+		"STACK_IMAGE=" + FactoryStack} {
+		if !strings.Contains(got, want) {
+			t.Errorf("the engine calls lack %q:\n%s", want, got)
+		}
+	}
+	if strings.Index(got, "-t "+FactoryStack) > strings.Index(got, "--target fw") {
+		t.Error("the factory layer was built before the factory stack")
+	}
+}
+
+func TestTheFactoryStackTagFollowsItsFileAndTheNodeImage(t *testing.T) {
+	if !strings.HasPrefix(FactoryStack, "localhost/ygg-factory-stack:") || len(FactoryStack) != len("localhost/ygg-factory-stack:")+12 {
+		t.Errorf("FactoryStack = %q", FactoryStack)
+	}
+	if !strings.Contains(factoryStackFile, "install -y --no-install-recommends git") || !strings.Contains(factoryStackFile, "ARG NODE_IMAGE") {
+		t.Error("the factory stack file does not install git on the Node image argument")
+	}
+	if factoryStackTag(factoryStackFile, NodeImage) != FactoryStack || factoryStackTag(factoryStackFile+"x", NodeImage) == FactoryStack ||
+		factoryStackTag(factoryStackFile, NodeImage+"x") == FactoryStack {
+		t.Error("the tag does not follow the file and the Node image")
+	}
+	if FactoryImages().Work == ImagesFor(NodeImage).Work {
+		t.Error("the factory images are still on the bare Node image")
+	}
+}

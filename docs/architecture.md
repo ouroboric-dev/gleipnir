@@ -24,7 +24,9 @@ The harness: agent adapters, the devcontainer sandbox driver, policies and the c
   not allow; it resolves nothing but the allowed hosts and the services' names. The services sit on an internal network with no route out, which the
   firewall joins, so none of them can reach the internet for a client. Each sandbox starts on the stack layer its spec names, so leaves of
   different realms differ. A scratch sandbox holds one folder and no git directory: a planner's
-  workspace (spec §3.3).
+  workspace (spec §3.3). A sandbox with no stack (a spec with no `Stack`, as a scratch session's) runs on Gleipnir's
+  factory stack, the pinned Node image plus git (`FactoryStack`), under the factory layer: `FactoryImages()`,
+  which a caller sets as `Config.Images`. `BuildFactory` builds both, pulling the Node image once.
 - Builds a realm's stack from the realm's build context (`BuildStack`, for `ygg sandbox build`): only
   from images pinned by digest and the Containerfile's own stages, with the isolated registry auth, and
   tagged with a hash of the context. The check scripts a realm bakes into its stack are read-only for the

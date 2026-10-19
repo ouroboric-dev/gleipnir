@@ -68,3 +68,41 @@ func TestUpStartsAScratchSandbox(t *testing.T) {
 		t.Errorf("devcontainer was not pointed at the scratch folder:\n%s", got)
 	}
 }
+
+func TestASandboxWithNoStackStartsTheFactoryLayerOnTheNodeImage(t *testing.T) {
+	if FactoryImages() != ImagesFor(FactoryStack) {
+		t.Errorf("FactoryImages() = %+v, want %+v", FactoryImages(), ImagesFor(FactoryStack))
+	}
+	tmp := t.TempDir()
+	c := cfg()
+	c.Images = FactoryImages()
+	c.Mounts = append(c.Mounts, PathMap{Host: tmp, Engine: "/mnt/wsl/cfg"})
+	sp := scratchSpec("/home/ana/ygg/proj/.factory/runs/r1")
+	if sp.Stack != "" {
+		t.Fatalf("the scratch spec names a stack: %q", sp.Stack)
+	}
+	if c.ImagesOf(sp) != FactoryImages() {
+		t.Errorf("ImagesOf(no stack) = %+v, want the factory layer", c.ImagesOf(sp))
+	}
+	g, err := Generate(filepath.Join(tmp, "sandbox"), sp, c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var cf composeFile
+	raw, _ := os.ReadFile(g.Compose)
+	if err := yaml.Unmarshal(raw, &cf); err != nil {
+		t.Fatal(err)
+	}
+	if got := cf.Services["work"].Image; got != FactoryImages().Work {
+		t.Errorf("work image = %q, want %q", got, FactoryImages().Work)
+	}
+	if got := cf.Services["fw"].Image; got != FactoryImages().Firewall {
+		t.Errorf("firewall image = %q, want %q", got, FactoryImages().Firewall)
+	}
+	if len(cf.Services) != 2 || len(cf.Networks) != 0 {
+		t.Errorf("services = %d, networks = %d; want only work and fw, and no services network", len(cf.Services), len(cf.Networks))
+	}
+	if got := cf.Services["work"].Volumes; len(got) != 1 || !strings.Contains(got[0], "/u/scratch/design") {
+		t.Errorf("work volumes = %q, want the one scratch volume", got)
+	}
+}

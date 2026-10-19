@@ -1,0 +1,7 @@
+# The factory stack: the stack of a sandbox with no stack (a scratch session's). The Node image Gleipnir
+# pins, plus git, which that image lacks and the factory layer's work stage requires. Built locally by
+# BuildFactory and tagged FactoryStack; the factory layer goes on top of it as on any stack.
+ARG NODE_IMAGE
+FROM ${NODE_IMAGE}
+RUN apt-get update && apt-get install -y --no-install-recommends git \
+ && rm -rf /var/lib/apt/lists/*
