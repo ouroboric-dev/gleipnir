@@ -152,6 +152,33 @@ func TestStrictPrivacyIsSetOnEveryModelTheToolMayCall(t *testing.T) {
 	}
 }
 
+// A real reviewer, deepseek-v4-flash, answered "What would you like help with?" to its whole prompt in about
+// half its sessions when the request named no reasoning effort: its thinking decided that the message held no
+// request (the real-agent smoke, v0-H17). With an effort named, it started the review every time (16 of 16 calls
+// to OpenRouter; 9 of 10 sessions gave a report).
+func TestEverySessionNamesAReasoningEffort(t *testing.T) {
+	f := &fake{stdout: map[string]string{"run": fixture(t, "success.jsonl")}}
+	for _, privacy := range []string{"standard", "strict"} {
+		conf, err := newAgent(t, privacy, nil).ConfigJSON(task(f, t))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var c struct {
+			Provider map[string]struct {
+				Models map[string]struct {
+					Options struct{ Reasoning map[string]string } `json:"options"`
+				} `json:"models"`
+			} `json:"provider"`
+		}
+		if err := json.Unmarshal([]byte(conf), &c); err != nil {
+			t.Fatal(err)
+		}
+		if got := c.Provider["openrouter"].Models["openai/gpt-4o-mini"].Options.Reasoning["effort"]; got != "high" {
+			t.Errorf("privacy %s: reasoning effort = %q, want high", privacy, got)
+		}
+	}
+}
+
 func TestStrictRefusesAModelItCannotTighten(t *testing.T) {
 	for _, model := range []string{"anthropic/claude-sonnet", "openrouter/", "gpt-4o"} {
 		if _, err := New(model, Config{Privacy: "strict"}); err == nil {
