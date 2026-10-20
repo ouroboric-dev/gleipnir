@@ -104,7 +104,7 @@ func (a *Agent) ConfigJSON(t gungnir.Task) (string, error) {
 		c["agent"] = map[string]any{"build": map[string]any{"steps": t.MaxTurns}}
 	}
 	if t.ReadOnly {
-		c["permission"] = map[string]any{"edit": "deny", "bash": "deny", "webfetch": "deny"}
+		c["permission"] = map[string]any{"edit": "deny", "bash": "deny", "webfetch": "deny", "external_directory": "deny"}
 	}
 	b, err := json.Marshal(c)
 	return string(b), err

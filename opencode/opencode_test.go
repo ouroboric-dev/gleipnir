@@ -192,6 +192,30 @@ func TestTheSessionRunsLockedDownInTheSandbox(t *testing.T) {
 	}
 }
 
+// Without --auto a permission that is set to "ask" is rejected on the spot, and the session ends with no
+// answer (the real-agent smoke, v0-H17: a reviewer read /app, outside its folder). Denied, the call is an
+// error the model reads, and it goes on to answer.
+func TestAReadOnlySessionDeniesTheFoldersOutsideItsOwn(t *testing.T) {
+	f := &fake{stdout: map[string]string{"run": fixture(t, "success.jsonl")}}
+	tk := task(f, t)
+	tk.ReadOnly = true
+	conf, err := newAgent(t, "standard", nil).ConfigJSON(tk)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var c struct {
+		Permission map[string]string `json:"permission"`
+	}
+	if err := json.Unmarshal([]byte(conf), &c); err != nil {
+		t.Fatal(err)
+	}
+	for _, k := range []string{"edit", "bash", "webfetch", "external_directory"} {
+		if c.Permission[k] != "deny" {
+			t.Errorf("permission %q = %q in a read-only session, want deny", k, c.Permission[k])
+		}
+	}
+}
+
 func TestRefusals(t *testing.T) {
 	if _, err := newAgent(t, "standard", nil).Run(context.Background(), gungnir.Task{Node: "n", Attempt: 1}); !errors.Is(err, gungnir.ErrNoSandbox) {
 		t.Errorf("no sandbox: %v", err)
