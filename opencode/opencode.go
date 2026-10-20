@@ -88,10 +88,13 @@ func (a *Agent) getenv(k string) string {
 // settings sit on the model, and small_model, which opencode uses for titles, is the same model: a
 // second model without them would send the prompt to a provider chosen with no filter (spike C).
 func (a *Agent) ConfigJSON(t gungnir.Task) (string, error) {
-	model := map[string]any{}
+	// A reasoning effort is named on every request: a model left to its default effort sometimes thinks that its
+	// prompt holds no request and asks what to do (see TestEverySessionNamesAReasoningEffort).
+	options := map[string]any{"reasoning": map[string]any{"effort": "high"}}
 	if a.cfg.Privacy == "strict" {
-		model["options"] = map[string]any{"provider": strictProvider}
+		options["provider"] = strictProvider
 	}
+	model := map[string]any{"options": options}
 	c := map[string]any{
 		"$schema": "https://opencode.ai/config.json", "autoupdate": false, "share": "disabled",
 		"provider": map[string]any{"openrouter": map[string]any{
