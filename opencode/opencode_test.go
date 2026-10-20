@@ -195,6 +195,7 @@ func TestTheSessionRunsLockedDownInTheSandbox(t *testing.T) {
 // Without --auto a permission that is set to "ask" is rejected on the spot, and the session ends with no
 // answer (the real-agent smoke, v0-H17: a reviewer read /app, outside its folder). Denied, the call is an
 // error the model reads, and it goes on to answer.
+// A sub-agent (task) ran past the reviewer's timeout in the same smoke, and a question has nobody to answer it.
 func TestAReadOnlySessionDeniesTheFoldersOutsideItsOwn(t *testing.T) {
 	f := &fake{stdout: map[string]string{"run": fixture(t, "success.jsonl")}}
 	tk := task(f, t)
@@ -209,7 +210,7 @@ func TestAReadOnlySessionDeniesTheFoldersOutsideItsOwn(t *testing.T) {
 	if err := json.Unmarshal([]byte(conf), &c); err != nil {
 		t.Fatal(err)
 	}
-	for _, k := range []string{"edit", "bash", "webfetch", "external_directory"} {
+	for _, k := range []string{"edit", "bash", "webfetch", "external_directory", "task", "question"} {
 		if c.Permission[k] != "deny" {
 			t.Errorf("permission %q = %q in a read-only session, want deny", k, c.Permission[k])
 		}
