@@ -7,6 +7,7 @@ package opencode
 import (
 	"bufio"
 	"bytes"
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -44,6 +45,25 @@ type Config struct {
 	Privacy string              // "standard" or "strict"
 	Price   *Price              // optional: cost is then computed from tokens, and marked estimated
 	Getenv  func(string) string // the host's environment; os.Getenv by default
+
+	// Reasoning is the reasoning effort named on every request of the role: "low", "medium" or "high". Unset ("")
+	// means "high". "off" names none, which leaves the model on its own default effort. That is the state in which
+	// deepseek-v4-flash took its prompt for an empty message and asked what to do (v0-H17, see
+	// TestEverySessionNamesAReasoningEffort), so "off" trades that reliability for the model's default, and
+	// whether OpenRouter rejects low or medium for a model that does not support them is unverified.
+	// Any other value is an error (see CheckReasoning).
+	Reasoning string
+}
+
+// ReasoningValues are the values of Config.Reasoning, besides unset.
+var ReasoningValues = []string{"low", "medium", "high", "off"}
+
+// CheckReasoning refuses a Config.Reasoning that is neither unset nor one of ReasoningValues.
+func CheckReasoning(v string) error {
+	if v == "" || slices.Contains(ReasoningValues, v) {
+		return nil
+	}
+	return fmt.Errorf("opencode: reasoning %q is not one of low, medium, high or off", v)
 }
 
 // Agent is the opencode adapter for one role's model.
@@ -71,6 +91,9 @@ func New(model string, cfg Config) (*Agent, error) {
 	default:
 		return nil, fmt.Errorf("opencode: privacy %q is neither standard nor strict", cfg.Privacy)
 	}
+	if err := CheckReasoning(cfg.Reasoning); err != nil {
+		return nil, err
+	}
 	return &Agent{cfg: cfg, model: id}, nil
 }
 
@@ -88,9 +111,15 @@ func (a *Agent) getenv(k string) string {
 // settings sit on the model, and small_model, which opencode uses for titles, is the same model: a
 // second model without them would send the prompt to a provider chosen with no filter (spike C).
 func (a *Agent) ConfigJSON(t gungnir.Task) (string, error) {
-	// A reasoning effort is named on every request: a model left to its default effort sometimes thinks that its
-	// prompt holds no request and asks what to do (see TestEverySessionNamesAReasoningEffort).
-	options := map[string]any{"reasoning": map[string]any{"effort": "high"}}
+	if err := CheckReasoning(a.cfg.Reasoning); err != nil {
+		return "", err
+	}
+	// A reasoning effort is named on every request unless the role says off: a model left to its default effort
+	// sometimes thinks that its prompt holds no request and asks what to do (see TestEverySessionNamesAReasoningEffort).
+	options := map[string]any{}
+	if effort := cmp.Or(a.cfg.Reasoning, "high"); effort != "off" {
+		options["reasoning"] = map[string]any{"effort": effort}
+	}
 	if a.cfg.Privacy == "strict" {
 		options["provider"] = strictProvider
 	}

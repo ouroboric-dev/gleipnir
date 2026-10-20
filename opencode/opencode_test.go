@@ -179,6 +179,83 @@ func TestEverySessionNamesAReasoningEffort(t *testing.T) {
 	}
 }
 
+// effortOf reads the reasoning option of the session's model from a config; ok is false when the option is absent.
+func effortOf(t *testing.T, conf string) (effort string, ok bool) {
+	t.Helper()
+	var c struct {
+		Provider map[string]struct {
+			Models map[string]struct {
+				Options map[string]json.RawMessage `json:"options"`
+			} `json:"models"`
+		} `json:"provider"`
+	}
+	if err := json.Unmarshal([]byte(conf), &c); err != nil {
+		t.Fatal(err)
+	}
+	raw, ok := c.Provider["openrouter"].Models["openai/gpt-4o-mini"].Options["reasoning"]
+	if !ok {
+		return "", false
+	}
+	var r map[string]string
+	if err := json.Unmarshal(raw, &r); err != nil {
+		t.Fatal(err)
+	}
+	return r["effort"], true
+}
+
+func TestReasoningSetting(t *testing.T) {
+	f := &fake{stdout: map[string]string{"run": fixture(t, "success.jsonl")}}
+	for _, tc := range []struct{ in, want string }{{"", "high"}, {"low", "low"}, {"medium", "medium"}, {"high", "high"}} {
+		for _, privacy := range []string{"standard", "strict"} {
+			a, err := New("openrouter/openai/gpt-4o-mini", Config{Privacy: privacy, Reasoning: tc.in})
+			if err != nil {
+				t.Fatal(err)
+			}
+			conf, err := a.ConfigJSON(task(f, t))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got, ok := effortOf(t, conf); !ok || got != tc.want {
+				t.Errorf("reasoning %q, privacy %s: effort = %q (present %v), want %q", tc.in, privacy, got, ok, tc.want)
+			}
+		}
+	}
+}
+
+func TestReasoningOffOmitsTheOption(t *testing.T) {
+	f := &fake{stdout: map[string]string{"run": fixture(t, "success.jsonl")}}
+	a, err := New("openrouter/openai/gpt-4o-mini", Config{Privacy: "strict", Reasoning: "off"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	conf, err := a.ConfigJSON(task(f, t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := effortOf(t, conf); ok {
+		t.Error("reasoning off still names a reasoning option")
+	}
+	if strings.Contains(conf, "effort") {
+		t.Error("reasoning off still names an effort")
+	}
+	if !strings.Contains(conf, "data_collection") {
+		t.Error("reasoning off dropped the strict provider settings")
+	}
+}
+
+func TestInvalidReasoningIsAnError(t *testing.T) {
+	f := &fake{stdout: map[string]string{"run": fixture(t, "success.jsonl")}}
+	for _, bad := range []string{"High", "max", "none", "on", "xhigh"} {
+		if _, err := New("openrouter/openai/gpt-4o-mini", Config{Reasoning: bad}); err == nil || !strings.Contains(err.Error(), "low, medium, high or off") {
+			t.Errorf("New with reasoning %q: err = %v, want one listing the allowed values", bad, err)
+		}
+		a := &Agent{cfg: Config{Reasoning: bad}, model: "openai/gpt-4o-mini"}
+		if _, err := a.ConfigJSON(task(f, t)); err == nil || !strings.Contains(err.Error(), "low, medium, high or off") {
+			t.Errorf("ConfigJSON with reasoning %q: err = %v, want one listing the allowed values", bad, err)
+		}
+	}
+}
+
 func TestStrictRefusesAModelItCannotTighten(t *testing.T) {
 	for _, model := range []string{"anthropic/claude-sonnet", "openrouter/", "gpt-4o"} {
 		if _, err := New(model, Config{Privacy: "strict"}); err == nil {

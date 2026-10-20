@@ -14,6 +14,11 @@ The harness: agent adapters, the devcontainer sandbox driver, policies and the c
 
 - Turns a task into an agent session: assembles context, calls the adapter (`claude-code`,
   `opencode` or `scripted`) and captures usage.
+- The `opencode` adapter names a reasoning effort on every request of a role: `Config.Reasoning` is `low`,
+  `medium` or `high`, and unset means `high`. `off` names none, so the model runs on its own default effort;
+  deepseek-v4-flash took its prompt for an empty message in that state (v0-H17). Another value is an error from
+  `New` and `ConfigJSON`. The `claude-code` and `scripted` adapters ignore the setting. Whether OpenRouter rejects
+  `low` or `medium` for a model that does not support them is unverified.
 - Loads skills explicitly per task, from Havamal at a pinned version (spec §5.1).
 - Runs commands in sandboxes and applies policies: devcontainer hardening, managed settings and
   the egress firewall (spec §6).
