@@ -17,6 +17,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"unicode/utf8"
 
 	"github.com/ouroboric-dev/gleipnir/bounded"
@@ -99,6 +100,8 @@ func (a *Agent) Run(ctx context.Context, t gungnir.Task) (gungnir.Result, error)
 		ctx, cancel = context.WithTimeout(ctx, t.Timeout)
 		defer cancel()
 	}
+	ctx, stop := context.WithCancel(ctx)
+	defer stop()
 	transcript, closeT, err := openTranscript(t)
 	if err != nil {
 		return gungnir.Result{}, err
@@ -106,9 +109,23 @@ func (a *Agent) Run(ctx context.Context, t gungnir.Task) (gungnir.Result, error)
 	defer closeT()
 	out, errOut := bounded.NewBuffer(maxStream), bounded.NewBuffer(maxStream)
 	tw := bounded.NewWriter(transcript, int64(maxStream))
+	// The session's tokens are added up as its messages arrive; the first message that takes them over
+	// the limit ends the session, as a timeout does: its context is cancelled and the sandbox kills the command.
+	var live tally
+	var over atomic.Bool
+	watch := bounded.NewLineWriter(func(line []byte) {
+		live.add(line)
+		if u := live.usage(); t.MaxTokens > 0 && u.InTok+u.OutTok > int64(t.MaxTokens) && !over.Swap(true) {
+			stop()
+		}
+	}, maxStream)
 	res, err := t.Sandbox.Run(ctx, gungnir.Cmd{Argv: Args(t), Env: env, Stdin: strings.NewReader(t.Prompt),
-		Stdout: io.MultiWriter(out, tw), Stderr: errOut})
+		Stdout: io.MultiWriter(out, tw, watch), Stderr: errOut})
 	used := partialUsage(out.Bytes())
+	if over.Load() {
+		return gungnir.Result{}, &gungnir.SessionError{Kind: gungnir.FailureTokenLimit, Usage: used,
+			Err: fmt.Errorf("claude-code: the session used %d tokens (input plus output, not cache reads), over its limit of %d", used.InTok+used.OutTok, t.MaxTokens)}
+	}
 	if err != nil {
 		// A session the timeout or the operator ended is the agent's; any other failure to run the
 		// command is the sandbox's (spec §12).
@@ -274,36 +291,54 @@ func clip(s string) string {
 // event per content block, counts once, at its largest figures; one with no id counts on its own, which
 // can only overcount, and a cap should err that way.
 func partialUsage(stream []byte) gungnir.Usage {
-	type tokens struct{ in, out, cacheNew, cacheRead int64 }
-	byID := map[string]tokens{}
-	var anon []tokens
+	var t tally
 	sc := bufio.NewScanner(bytes.NewReader(stream))
 	sc.Buffer(make([]byte, 1<<20), 64<<20)
 	for sc.Scan() {
-		var e struct {
-			Type    string `json:"type"`
-			Message struct {
-				ID  string `json:"id"`
-				Raw struct {
-					Input     int64 `json:"input_tokens"`
-					Output    int64 `json:"output_tokens"`
-					CacheNew  int64 `json:"cache_creation_input_tokens"`
-					CacheRead int64 `json:"cache_read_input_tokens"`
-				} `json:"usage"`
-			} `json:"message"`
-		}
-		line := bytes.TrimSpace(sc.Bytes())
-		if len(line) == 0 || line[0] != '{' || json.Unmarshal(line, &e) != nil || e.Type != "assistant" {
-			continue
-		}
-		u := tokens{e.Message.Raw.Input, e.Message.Raw.Output, e.Message.Raw.CacheNew, e.Message.Raw.CacheRead}
-		if e.Message.ID == "" {
-			anon = append(anon, u)
-			continue
-		}
-		old := byID[e.Message.ID]
-		byID[e.Message.ID] = tokens{max(old.in, u.in), max(old.out, u.out), max(old.cacheNew, u.cacheNew), max(old.cacheRead, u.cacheRead)}
+		t.add(sc.Bytes())
 	}
+	return t.usage()
+}
+
+// tally adds up the usage of a stream's assistant messages, line by line, by the rules of partialUsage.
+type tally struct {
+	byID map[string]tokens
+	anon []tokens
+}
+
+type tokens struct{ in, out, cacheNew, cacheRead int64 }
+
+// add reads one line of the stream; a line that is not an assistant message changes nothing.
+func (t *tally) add(line []byte) {
+	var e struct {
+		Type    string `json:"type"`
+		Message struct {
+			ID  string `json:"id"`
+			Raw struct {
+				Input     int64 `json:"input_tokens"`
+				Output    int64 `json:"output_tokens"`
+				CacheNew  int64 `json:"cache_creation_input_tokens"`
+				CacheRead int64 `json:"cache_read_input_tokens"`
+			} `json:"usage"`
+		} `json:"message"`
+	}
+	line = bytes.TrimSpace(line)
+	if len(line) == 0 || line[0] != '{' || json.Unmarshal(line, &e) != nil || e.Type != "assistant" {
+		return
+	}
+	u := tokens{e.Message.Raw.Input, e.Message.Raw.Output, e.Message.Raw.CacheNew, e.Message.Raw.CacheRead}
+	if e.Message.ID == "" {
+		t.anon = append(t.anon, u)
+		return
+	}
+	if t.byID == nil {
+		t.byID = map[string]tokens{}
+	}
+	old := t.byID[e.Message.ID]
+	t.byID[e.Message.ID] = tokens{max(old.in, u.in), max(old.out, u.out), max(old.cacheNew, u.cacheNew), max(old.cacheRead, u.cacheRead)}
+}
+
+func (t *tally) usage() gungnir.Usage {
 	var sum gungnir.Usage
 	add := func(t tokens) {
 		sum.InTok += t.in + t.cacheNew
@@ -311,11 +346,11 @@ func partialUsage(stream []byte) gungnir.Usage {
 		sum.CacheTok += t.cacheRead
 		sum.Turns++
 	}
-	for _, t := range byID {
-		add(t)
+	for _, m := range t.byID {
+		add(m)
 	}
-	for _, t := range anon {
-		add(t)
+	for _, m := range t.anon {
+		add(m)
 	}
 	sum.CostEstimated = sum.Turns > 0
 	return sum

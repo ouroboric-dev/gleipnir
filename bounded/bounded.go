@@ -67,3 +67,37 @@ func (b *Writer) Truncated() bool { return b.dropped }
 
 // Err returns the first error w gave.
 func (b *Writer) Err() error { return b.err }
+
+// LineWriter hands each whole line written to it to fn, without its newline, whatever the chunks the
+// writes come in. A line longer than max bytes is dropped, so a session that never prints a newline
+// can't fill the host's memory. An unfinished last line is never handed over.
+type LineWriter struct {
+	fn   func([]byte)
+	max  int
+	buf  []byte
+	skip bool // inside a line over max, up to its newline
+}
+
+// NewLineWriter returns a LineWriter that calls fn on each line of at most max bytes.
+func NewLineWriter(fn func([]byte), max int) *LineWriter { return &LineWriter{fn: fn, max: max} }
+
+func (l *LineWriter) Write(p []byte) (int, error) {
+	n := len(p)
+	for len(p) > 0 {
+		i := bytes.IndexByte(p, '\n')
+		if i < 0 {
+			if !l.skip && len(l.buf)+len(p) > l.max {
+				l.skip, l.buf = true, nil
+			}
+			if !l.skip {
+				l.buf = append(l.buf, p...)
+			}
+			break
+		}
+		if !l.skip && len(l.buf)+i <= l.max {
+			l.fn(append(l.buf, p[:i]...))
+		}
+		l.skip, l.buf, p = false, l.buf[:0], p[i+1:]
+	}
+	return n, nil
+}

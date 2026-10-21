@@ -3,6 +3,7 @@ package bounded
 import (
 	"bytes"
 	"errors"
+	"slices"
 	"testing"
 )
 
@@ -47,5 +48,20 @@ func TestAWriterKeepsTheErrorOfItsDestinationAndGoesOn(t *testing.T) {
 	w.Write([]byte("def"))
 	if w.Err() == nil || f.calls != 1 {
 		t.Errorf("err %v after %d calls; want the first error kept and no more writes", w.Err(), f.calls)
+	}
+}
+
+func TestALineWriterHandsOverWholeLinesWhateverTheChunks(t *testing.T) {
+	var got []string
+	w := NewLineWriter(func(l []byte) { got = append(got, string(l)) }, 8)
+	for _, s := range []string{"ab", "c\nde", "f\n\ng", "h\ntoolonglineindeed\nok\nhalf"} {
+		if n, err := w.Write([]byte(s)); n != len(s) || err != nil {
+			t.Fatalf("Write(%q) = %d, %v; a bounded writer never fails and never reports a short write", s, n, err)
+		}
+	}
+	// A line over the limit is dropped, and the one after it still arrives; an unfinished last line never does.
+	want := []string{"abc", "def", "", "gh", "ok"}
+	if !slices.Equal(got, want) {
+		t.Errorf("lines = %q, want %q", got, want)
 	}
 }
