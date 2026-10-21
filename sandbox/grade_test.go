@@ -38,8 +38,10 @@ func graderDirs(t *testing.T, dockerfile string) GradeSpec {
 		t.Fatal(err)
 	}
 	return GradeSpec{Run: "20261018-090000-a1b2c3", Task: "client-gallery-lite", Environment: env, App: app, Tests: tests, Logs: logs,
-		Timeout: time.Minute, Memory: "4g", CPUs: 4, Env: map[string]string{"WORKERS": "4"}}
+		Timeout: time.Minute, Memory: "4g", CPUs: 4, ScoreKey: testScoreKey, Env: map[string]string{"WORKERS": "4"}}
 }
+
+var testScoreKey = strings.Repeat("ab", 16)
 
 const graderDockerfile = "FROM " + baseA + "\nWORKDIR /grader\nCOPY package.json ./\nRUN mkdir -p /app\n"
 
@@ -84,7 +86,7 @@ func TestGradeBuildsTheImageThenRunsTheSuiteWithoutANetworkAndRemovesTheContaine
 	args := runCall(t, log)
 	flags := " " + strings.Join(args, " ") + " "
 	for _, want := range []string{" --network none ", " --label ygg.grader=20261018-090000-a1b2c3 ", " --memory 4g ", " --cpus 4 ",
-		" --name ygg-grader-20261018-090000-a1b2c3-client-gallery-lite ", " --env WORKERS=4 ", " " + ref + " bash /tests/test.sh"} {
+		" --name ygg-grader-20261018-090000-a1b2c3-client-gallery-lite ", " --env WORKERS=4 ", " --env YGG_SCORE_KEY=" + testScoreKey + " ", " " + ref + " bash /tests/test.sh"} {
 		if !strings.Contains(flags, want) {
 			t.Errorf("podman run lacks %q:\n%s", want, flags)
 		}
@@ -217,6 +219,12 @@ func TestGradeRefusesPathsItCouldNotMountSafely(t *testing.T) {
 		"a run name with a space":       func(g *GradeSpec) { g.Run = "run 1" },
 		"no timeout":                    func(g *GradeSpec) { g.Timeout = 0 },
 		"a memory limit that is a flag": func(g *GradeSpec) { g.Memory = "--privileged" },
+		"no score key":                  func(g *GradeSpec) { g.ScoreKey = "" },
+		"a short score key":             func(g *GradeSpec) { g.ScoreKey = testScoreKey[:31] },
+		"a score key in upper case":     func(g *GradeSpec) { g.ScoreKey = strings.ToUpper(testScoreKey) },
+		"a score key that is not hex":   func(g *GradeSpec) { g.ScoreKey = strings.Repeat("g", 32) },
+		"a score key with a newline":    func(g *GradeSpec) { g.ScoreKey = testScoreKey[:31] + "\n" },
+		"an env that names the key":     func(g *GradeSpec) { g.Env = map[string]string{"YGG_SCORE_KEY": testScoreKey} },
 		"negative cpus":                 func(g *GradeSpec) { g.CPUs = -1 },
 		"an env name in lower case":     func(g *GradeSpec) { g.Env = map[string]string{"workers": "4"} },
 		"an env value with a newline":   func(g *GradeSpec) { g.Env = map[string]string{"WORKERS": "4\n5"} },
@@ -365,5 +373,70 @@ func TestGraderImageIsNamedForEveryFileOfTheEnvironmentAndRefusesWhatCouldLeadOu
 	}
 	if got := logOf(t, log); strings.Contains(got, "podman build") || strings.Contains(got, "podman run") {
 		t.Errorf("the engine built or ran something:\n%s", got)
+	}
+}
+
+func TestGradeReturnsTheWholeStdoutAndNeverTheStderr(t *testing.T) {
+	d, _, _ := fakeEngine(t)
+	dir := t.TempDir()
+	// Longer than the 8000 bytes of Log, with no newline at the end, as a suite's last line may be.
+	want := "noise\nygg-results/v1 " + testScoreKey + " {\"suites\":\"" + strings.Repeat("x", 3*maxGradeLog) + "\"}"
+	os.WriteFile(filepath.Join(dir, "out"), []byte(want), 0o644)
+	os.WriteFile(filepath.Join(dir, "err"), []byte("app said this on stderr\n"), 0o644)
+	t.Setenv("STUB_RUN_OUT", filepath.Join(dir, "out"))
+	t.Setenv("STUB_RUN_ERR", filepath.Join(dir, "err"))
+	res, err := d.Grade(context.Background(), graderDirs(t, graderDockerfile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(res.Stdout) != want {
+		t.Errorf("Stdout has %d bytes, want the %d the suite printed, whole", len(res.Stdout), len(want))
+	}
+	if strings.Contains(string(res.Stdout), "stderr") {
+		t.Error("Stdout holds stderr text")
+	}
+	if len(res.Log) != maxGradeLog || !strings.HasSuffix(res.Log, want[len(want)-100:]) {
+		t.Errorf("Log has %d bytes, want the last %d of stdout", len(res.Log), maxGradeLog)
+	}
+}
+
+func TestGradeFailsWithNoResultWhenTheStdoutIsOverTheBound(t *testing.T) {
+	d, log, _ := fakeEngine(t)
+	old := maxGradeStdout
+	maxGradeStdout = 1 << 20
+	t.Cleanup(func() { maxGradeStdout = old })
+	t.Setenv("STUB_RUN_FLOOD", "1")
+	gs := graderDirs(t, graderDockerfile)
+	gs.Timeout = time.Minute
+	start := time.Now()
+	res, err := d.Grade(context.Background(), gs)
+	if !errors.Is(err, ErrGradeStdoutBound) || errors.Is(err, ErrGradeTimeout) {
+		t.Errorf("Grade() error = %v, want ErrGradeStdoutBound, not a timeout", err)
+	}
+	if time.Since(start) > 20*time.Second {
+		t.Errorf("Grade() took %v: the flooding process was not killed at the bound", time.Since(start))
+	}
+	if res.Stdout != nil || res.Log != "" || res.Image != "" {
+		t.Errorf("Grade() returned a result with the error: %+v", res)
+	}
+	if got := logOf(t, log); !strings.Contains(got, "podman rm -f --ignore --time 0 ygg-grader-") {
+		t.Errorf("the container was not removed:\n%s", got)
+	}
+}
+
+func TestGradeTimeoutBeforeTheBoundIsATimeoutWithTheStdoutSoFar(t *testing.T) {
+	d, _, _ := fakeEngine(t)
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "out"), []byte("partial\n"), 0o644)
+	t.Setenv("STUB_RUN_OUT", filepath.Join(dir, "out"))
+	t.Setenv("STUB_RUN_SLEEP", "30")
+	gs := graderDirs(t, graderDockerfile)
+	gs.Timeout = 300 * time.Millisecond
+	res, err := d.Grade(context.Background(), gs)
+	if !errors.Is(err, ErrGradeTimeout) || errors.Is(err, ErrGradeStdoutBound) {
+		t.Errorf("Grade() error = %v, want ErrGradeTimeout", err)
+	}
+	if !strings.Contains(res.Log, "partial") {
+		t.Errorf("Log = %q, want the output so far", res.Log)
 	}
 }

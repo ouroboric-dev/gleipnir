@@ -54,7 +54,7 @@ func itGrader(t *testing.T, script string) (*Driver, GradeSpec) {
 		t.Fatal(err)
 	}
 	gs := GradeSpec{Run: "20261018-120000-a1b2c3", Task: "it-task", Environment: env, App: app, Tests: tests, Logs: logs,
-		Timeout: 5 * time.Minute, Env: map[string]string{"WORKERS": "2"}}
+		Timeout: 5 * time.Minute, ScoreKey: strings.Repeat("c0", 16), Env: map[string]string{"WORKERS": "2"}}
 	if os.Getenv("YGG_SANDBOX_GRADE_LIMITS") != "" {
 		gs.Memory, gs.CPUs = "1g", 1
 	}
@@ -69,7 +69,8 @@ echo from-the-suite > /app/written.txt && echo app-rw > app.txt
 if touch /tests/x 2>/dev/null; then echo tests-rw > tests.txt; else echo tests-ro > tests.txt; fi
 echo "$WORKERS" > env.txt
 cat /proc/self/mountinfo | cut -d' ' -f5 > mounts.txt
-echo '{"suites":[]}' > results.json
+echo "ygg-results/v1 $YGG_SCORE_KEY {\"suites\":[]}"
+echo "to stderr" >&2
 exit 3
 `
 
@@ -91,10 +92,13 @@ func TestSandboxGradeRunsTheSuiteIsolatedAndRemovesTheContainer(t *testing.T) {
 	if got := read("ifaces.txt"); got != "lo" {
 		t.Errorf("the container's network interfaces = %q, want lo only", got)
 	}
-	for file, want := range map[string]string{"net.txt": "blocked", "app.txt": "app-rw", "tests.txt": "tests-ro", "env.txt": "2", "results.json": `{"suites":[]}`} {
+	for file, want := range map[string]string{"net.txt": "blocked", "app.txt": "app-rw", "tests.txt": "tests-ro", "env.txt": "2"} {
 		if got := read(file); got != want {
 			t.Errorf("%s = %q, want %q", file, got, want)
 		}
+	}
+	if want := "ygg-results/v1 " + gs.ScoreKey + ` {"suites":[]}` + "\n"; string(res.Stdout) != want {
+		t.Errorf("Stdout = %q, want %q (the line, and none of the stderr)", res.Stdout, want)
 	}
 	if b, err := os.ReadFile(filepath.Join(gs.App, "written.txt")); err != nil || strings.TrimSpace(string(b)) != "from-the-suite" {
 		t.Errorf("the suite's write to /app did not reach the copy: %q, %v", b, err)

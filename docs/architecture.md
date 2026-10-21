@@ -40,11 +40,14 @@ The harness: agent adapters, the devcontainer sandbox driver, policies and the c
   (`BuildGrader`, with the rules of `BuildStack`, and a tag that is a hash of the folder), then runs
   `bash /tests/test.sh` in one container of that image. The container has no network but loopback and three
   mounts: `/app` (the project, read and write), `/tests` (the suite, read only) and `/logs/verifier` (an empty
-  folder for the results). It has the label `ygg.grader=<run id>`, and it is always removed, after a pass, a
-  failure, a timeout and a cancel. `Grade` refuses a path it could not mount safely before it runs
+  folder for the suite's own logs, which nothing reads as a score). It has the label `ygg.grader=<run id>`,
+  and it is always removed, after a pass, a failure, a timeout and a cancel. `Grade` refuses a path it could not mount safely before it runs
   anything, and a `podman run` that exits 125, 126 or 127 is an error, not a result. An empty memory limit and
-  zero CPUs mean no limit, for an engine that cannot apply one. `Grade` reads no result: the score is
-  Odin's. `GraderLeftovers` finds a container a killed run left, by its label, and `RemoveGrader` removes it.
+  zero CPUs mean no limit, for an engine that cannot apply one. `Grade` sets `YGG_SCORE_KEY` (32 hex characters, one per attempt) in
+  the container and returns the container's stdout, whole and never mixed with its stderr, up to 32 MiB; over that it kills the process and
+  returns an error and no result. `Grade` reads no score: the line the suite prints on stdout is the score, and
+  Odin reads it. `GraderLeftovers` finds a container a killed run left, by its label, and `RemoveGrader`
+  removes it.
 - Runs checks.
 
 ## Depends on
