@@ -17,6 +17,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"unicode/utf8"
 
 	"github.com/ouroboric-dev/gleipnir/bounded"
@@ -185,6 +186,8 @@ func (a *Agent) Run(ctx context.Context, t gungnir.Task) (gungnir.Result, error)
 		ctx, cancel = context.WithTimeout(ctx, t.Timeout)
 		defer cancel()
 	}
+	ctx, stop := context.WithCancel(ctx)
+	defer stop()
 	transcript, closeT, err := openTranscript(t)
 	if err != nil {
 		return gungnir.Result{}, err
@@ -193,10 +196,24 @@ func (a *Agent) Run(ctx context.Context, t gungnir.Task) (gungnir.Result, error)
 	version := a.version(ctx, t, env)
 	out, errOut := bounded.NewBuffer(maxStream), bounded.NewBuffer(maxStream)
 	tw := bounded.NewWriter(transcript, int64(maxStream))
+	// The session's tokens are added up as its steps finish; the first step that takes them over the limit
+	// ends the session, as a timeout does: its context is cancelled and the sandbox kills the command.
+	var live int64
+	var over atomic.Bool
+	watch := bounded.NewLineWriter(func(line []byte) {
+		live += stepTokens(line)
+		if t.MaxTokens > 0 && live > int64(t.MaxTokens) && !over.Swap(true) {
+			stop()
+		}
+	}, maxStream)
 	res, err := t.Sandbox.Run(ctx, gungnir.Cmd{Argv: Args(t, a.model), Env: env, Stdin: strings.NewReader(t.Prompt),
-		Stdout: io.MultiWriter(out, tw), Stderr: errOut})
+		Stdout: io.MultiWriter(out, tw, watch), Stderr: errOut})
 	// The steps that finished before the session ended were spent, whatever way it ended (backlog B-020).
 	_, spent, _, _ := a.parse(bytes.NewReader(out.Bytes()), 0)
+	if over.Load() {
+		return gungnir.Result{}, &gungnir.SessionError{Kind: gungnir.FailureTokenLimit, Usage: spent,
+			Err: fmt.Errorf("opencode: the session used %d tokens (input plus output, not cache reads), over its limit of %d", spent.InTok+spent.OutTok, t.MaxTokens)}
+	}
 	if err != nil {
 		// A session the timeout or the operator ended is the agent's; any other failure to run the
 		// command is the sandbox's (spec §12).
@@ -290,6 +307,24 @@ type event struct {
 			StatusCode int    `json:"statusCode"`
 		} `json:"data"`
 	} `json:"error"`
+}
+
+// stepTokens is the input and output tokens (reasoning and cache writes included, cache reads not) of one
+// line of the stream, as parse counts them: zero for any line but a step_finish that holds all its numbers.
+func stepTokens(line []byte) int64 {
+	var e event
+	if json.Unmarshal(bytes.TrimSpace(line), &e) != nil || e.Type != "step_finish" {
+		return 0
+	}
+	tk := e.Part.Tokens
+	if tk == nil || tk.Input == nil || tk.Output == nil || tk.Cache == nil || tk.Cache.Read == nil || tk.Cache.Write == nil || e.Part.Cost == nil {
+		return 0
+	}
+	n := *tk.Input + *tk.Output + *tk.Cache.Write
+	if tk.Reasoning != nil {
+		n += *tk.Reasoning
+	}
+	return n
 }
 
 // parse reads a session's events. Each step_finish carries one step's tokens, and the session's

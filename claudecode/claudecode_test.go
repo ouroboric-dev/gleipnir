@@ -330,3 +330,64 @@ func TestSessionOutputIsBounded(t *testing.T) {
 		t.Errorf("the transcript = %v, %v; want at most 200 bytes", fi, err)
 	}
 }
+
+// streamer is a tool that prints its lines one by one, as a live session does, and stops at the first
+// line after its context ends, as the sandbox kills a command.
+type streamer struct {
+	lines   []string
+	printed int
+}
+
+func (s *streamer) Run(ctx context.Context, c gungnir.Cmd) (gungnir.ExecResult, error) {
+	for _, l := range s.lines {
+		if ctx.Err() != nil {
+			return gungnir.ExecResult{ExitCode: -1}, ctx.Err()
+		}
+		c.Stdout.Write([]byte(l + "\n"))
+		s.printed++
+	}
+	return gungnir.ExecResult{}, nil
+}
+
+// Backlog B-080: a session that passes Task.MaxTokens is stopped, and counts what it used.
+func TestASessionOverItsTokenLimitIsStopped(t *testing.T) {
+	lines := []string{initLine,
+		assistant("m1", 10, 20, 90, 5000), assistant("m1", 10, 50, 90, 5000), // 100 in + 50 out, once; cache reads do not count
+		assistant("m2", 200, 100, 0, 9000), // 450 so far
+		assistant("m3", 500, 100, 0, 0),    // 1050: over 1000
+		assistant("m4", 1, 1, 0, 0), okResult}
+	s := &streamer{lines: lines}
+	tk := task(&fake{})
+	tk.Sandbox, tk.MaxTokens, tk.TranscriptDir = s, 1000, t.TempDir()
+	_, err := agent().Run(context.Background(), tk)
+	var se *gungnir.SessionError
+	if !errors.As(err, &se) || se.Kind != gungnir.FailureTokenLimit {
+		t.Fatalf("Run() = %v, want a token-limit failure", err)
+	}
+	if !strings.Contains(err.Error(), "1000") || !strings.Contains(err.Error(), "1050") {
+		t.Errorf("the error %q should name the limit 1000 and the tokens used, 1050", err)
+	}
+	want := gungnir.Usage{InTok: 100 + 200 + 500, OutTok: 50 + 100 + 100, CacheTok: 14000, Turns: 3, CostEstimated: true}
+	if se.Usage != want {
+		t.Errorf("usage = %+v, want %+v", se.Usage, want)
+	}
+	if s.printed != 5 {
+		t.Errorf("the tool printed %d lines, want it stopped after the 5th, the one that passed the limit", s.printed)
+	}
+	if b, err := os.ReadFile(filepath.Join(tk.TranscriptDir, "build-1.jsonl")); err != nil || !strings.Contains(string(b), `"id":"m3"`) {
+		t.Errorf("the transcript = %q, %v; want what the session printed", b, err)
+	}
+}
+
+func TestASessionUnderItsTokenLimitOrWithNoneEndsOK(t *testing.T) {
+	lines := []string{initLine, assistant("m1", 4, 97, 3134, 26776), okResult} // 3235 tokens
+	for name, limit := range map[string]int{"under": 3235, "none": 0} {
+		s := &streamer{lines: lines}
+		tk := task(&fake{})
+		tk.Sandbox, tk.MaxTokens, tk.TranscriptDir = s, limit, t.TempDir()
+		r, err := agent().Run(context.Background(), tk)
+		if err != nil || r.Status != gungnir.StatusOK || s.printed != len(lines) {
+			t.Errorf("%s: Run() = %+v, %v after %d lines; want ok and the whole stream", name, r, err, s.printed)
+		}
+	}
+}

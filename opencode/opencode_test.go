@@ -470,3 +470,72 @@ func TestSessionOutputIsBounded(t *testing.T) {
 		t.Errorf("the transcript = %v, %v; want at most 300 bytes", fi, err)
 	}
 }
+
+// streamer is a tool that prints its lines one by one, as a live session does, and stops at the first
+// line after its context ends, as the sandbox kills a command.
+type streamer struct {
+	lines   []string
+	printed int
+}
+
+func (s *streamer) Run(ctx context.Context, c gungnir.Cmd) (gungnir.ExecResult, error) {
+	if c.Argv[1] == "--version" {
+		c.Stdout.Write([]byte("1.18.32\n"))
+		return gungnir.ExecResult{}, nil
+	}
+	for _, l := range s.lines {
+		if ctx.Err() != nil {
+			return gungnir.ExecResult{ExitCode: -1}, ctx.Err()
+		}
+		c.Stdout.Write([]byte(l + "\n"))
+		s.printed++
+	}
+	return gungnir.ExecResult{}, nil
+}
+
+func step(in, out, reasoning, cacheWrite, cacheRead int) string {
+	return fmt.Sprintf(`{"type":"step_finish","part":{"type":"step-finish","reason":"stop","tokens":{"input":%d,"output":%d,"reasoning":%d,"cache":{"write":%d,"read":%d}},"cost":0.001}}`,
+		in, out, reasoning, cacheWrite, cacheRead)
+}
+
+// Backlog B-080: a session that passes Task.MaxTokens is stopped, and counts what it used.
+func TestASessionOverItsTokenLimitIsStopped(t *testing.T) {
+	lines := []string{`{"type":"step_start","part":{"type":"step-start"}}`,
+		step(100, 50, 0, 0, 5000),    // 150; cache reads do not count
+		step(200, 60, 40, 100, 9000), // 550
+		step(400, 100, 0, 0, 0),      // 1050: over 1000
+		step(1, 1, 0, 0, 0), step(1, 1, 0, 0, 0)}
+	s := &streamer{lines: lines}
+	tk := task(&fake{}, t)
+	tk.Sandbox, tk.MaxTokens = s, 1000
+	_, err := newAgent(t, "standard", nil).Run(context.Background(), tk)
+	var se *gungnir.SessionError
+	if !errors.As(err, &se) || se.Kind != gungnir.FailureTokenLimit {
+		t.Fatalf("Run() = %v, want a token-limit failure", err)
+	}
+	if !strings.Contains(err.Error(), "1000") || !strings.Contains(err.Error(), "1050") {
+		t.Errorf("the error %q should name the limit 1000 and the tokens used, 1050", err)
+	}
+	if se.Usage.InTok != 800 || se.Usage.OutTok != 50+60+40+100 || se.Usage.CacheTok != 14000 || se.Usage.Turns != 3 {
+		t.Errorf("usage = %+v, want 3 steps: 700 in (cache writes included), 250 out (reasoning included), 14000 cached", se.Usage)
+	}
+	if s.printed != 4 {
+		t.Errorf("the tool printed %d lines, want it stopped after the 4th, the one that passed the limit", s.printed)
+	}
+	if b, err := os.ReadFile(tk.TranscriptDir + "/review-1.jsonl"); err != nil || strings.Count(string(b), "step_finish") != 3 {
+		t.Errorf("the transcript = %q, %v; want the 3 steps the session printed", b, err)
+	}
+}
+
+func TestASessionUnderItsTokenLimitOrWithNoneEndsOK(t *testing.T) {
+	lines := []string{`{"type":"step_start","part":{"type":"step-start"}}`, `{"type":"text","part":{"type":"text","text":"done"}}`, step(7, 5, 0, 0, 80)}
+	for name, limit := range map[string]int{"under": 12, "none": 0} {
+		s := &streamer{lines: lines}
+		tk := task(&fake{}, t)
+		tk.Sandbox, tk.MaxTokens = s, limit
+		r, err := newAgent(t, "standard", nil).Run(context.Background(), tk)
+		if err != nil || r.Status != gungnir.StatusOK || s.printed != len(lines) {
+			t.Errorf("%s: Run() = %+v, %v after %d lines; want ok and the whole stream", name, r, err, s.printed)
+		}
+	}
+}
