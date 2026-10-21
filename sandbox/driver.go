@@ -95,7 +95,8 @@ func (d *Driver) Env() []string {
 	return append(env, "CONTAINER_HOST="+d.engine, "REGISTRY_AUTH_FILE="+filepath.Join(d.auth, "auth.json"), "DOCKER_CONFIG="+d.auth)
 }
 
-func (d *Driver) run(ctx context.Context, name string, args ...string) ([]byte, error) {
+// command is a tool of the engine's, run in its own process group with the driver's environment.
+func (d *Driver) command(ctx context.Context, name string, args ...string) *exec.Cmd {
 	cmd := exec.CommandContext(ctx, name, args...)
 	cmd.Env = d.Env()
 	// The tools start children of their own (devcontainer runs podman-compose): a timeout kills the
@@ -103,6 +104,11 @@ func (d *Driver) run(ctx context.Context, name string, args ...string) ([]byte, 
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	cmd.Cancel = func() error { return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) }
 	cmd.WaitDelay = 5 * time.Second
+	return cmd
+}
+
+func (d *Driver) run(ctx context.Context, name string, args ...string) ([]byte, error) {
+	cmd := d.command(ctx, name, args...)
 	var out, errOut bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &out, &errOut
 	if err := cmd.Run(); err != nil {

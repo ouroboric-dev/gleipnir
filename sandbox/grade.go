@@ -1,6 +1,7 @@
 package sandbox
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -25,11 +26,14 @@ import (
 // a grader are different things, and a doctor that stops one must not stop the other.
 const LabelGrader = "ygg.grader"
 
+// scoreKeyVar is the environment variable that carries GradeSpec.ScoreKey into the container.
+const scoreKeyVar = "YGG_SCORE_KEY"
+
 // The three places a grader container sees the host, and nothing else (spec §11).
 const (
 	GradeApp   = "/app"           // the exported project: a copy, read and write
 	GradeTests = "/tests"         // the hidden suite: read only
-	GradeLogs  = "/logs/verifier" // an empty host folder the suite writes results.json to
+	GradeLogs  = "/logs/verifier" // an empty host folder for the suite's own logs; the score is not read from it
 )
 
 // ErrGradeTimeout means the suite did not end within the time it was given. The container is removed.
@@ -42,17 +46,20 @@ type GradeSpec struct {
 	Environment string        // the task's environment folder, with a Containerfile or a Dockerfile; it is built, never mounted
 	App         string        // the project's exported files, as a copy the container may change: Odin throws it away
 	Tests       string        // the hidden suite's tests folder, with test.sh; mounted read only
-	Logs        string        // an empty host folder; the suite writes results.json to it
+	Logs        string        // an empty host folder for the suite's logs; nothing in it is a score
 	Timeout     time.Duration // the most the container may run
 	Memory      string        // the memory limit, such as 4g
 	CPUs        int
 	Env         map[string]string // the task's verifier.env; NAME in capitals
+	ScoreKey    string            // 32 lowercase hex characters, one per attempt; the container gets it as YGG_SCORE_KEY
 }
 
-// GradeResult says how a grading run ended. The suite's exit status is not the score: results.json is.
+// GradeResult says how a grading run ended. The suite's exit status is not the score: the line the suite
+// prints on its stdout is, and Stdout is there for the caller to read it.
 type GradeResult struct {
 	Image    string // the image the suite ran in
 	ExitCode int    // test.sh's exit status
+	Stdout   []byte // everything the container wrote to its stdout, up to maxGradeStdout; never its stderr
 	Log      string // the end of what the container wrote and the engine said, for the run folder; never for an agent
 }
 
@@ -64,11 +71,38 @@ const podmanCommandNotFound = 127
 // maxGradeLog is how many bytes of the container's output a GradeResult keeps.
 const maxGradeLog = 8000
 
+// maxGradeStdout is how many bytes of the container's stdout Grade captures. A variable, so a test can lower it.
+var maxGradeStdout = 32 << 20
+
+// ErrGradeStdoutBound means the container wrote more to its stdout than Grade keeps. The process is killed
+// and the container removed, and Grade returns no result: a stdout cut short could hide the score.
+var ErrGradeStdoutBound = errors.New("the grader wrote more to its stdout than the bound")
+
+// boundedBuffer keeps what it is written, up to max bytes. At the first byte over, it calls over and fails.
+type boundedBuffer struct {
+	buf  bytes.Buffer
+	max  int
+	over func()
+	full bool
+}
+
+func (b *boundedBuffer) Write(p []byte) (int, error) {
+	if b.full || b.buf.Len()+len(p) > b.max {
+		if !b.full {
+			b.full = true
+			b.over()
+		}
+		return 0, ErrGradeStdoutBound
+	}
+	return b.buf.Write(p)
+}
+
 var (
 	graderName = regexp.MustCompile(`^[a-z][a-z0-9-]*$`)
 	graderRun  = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]*$`)
 	graderMem  = regexp.MustCompile(`^[1-9][0-9]*[mg]$`)
 	graderVar  = regexp.MustCompile(`^[A-Z][A-Z0-9_]*$`)
+	graderKey  = regexp.MustCompile(`^[0-9a-f]{32}$`)
 )
 
 // envContainerfile returns the file of the build context at dir that the image is built from: a
@@ -163,7 +197,13 @@ func (g GradeSpec) check() error {
 	if g.Timeout <= 0 || g.CPUs < 0 || (g.Memory != "" && !graderMem.MatchString(g.Memory)) {
 		return fmt.Errorf("a grading run needs a timeout above zero, no negative cpus and a memory limit such as 4g")
 	}
+	if !graderKey.MatchString(g.ScoreKey) {
+		return fmt.Errorf("the score key must be 32 lowercase hex characters")
+	}
 	for _, name := range sortedEnv(g.Env) {
+		if name == scoreKeyVar {
+			return fmt.Errorf("env %s is the grader's own: the score key is set by Grade", name)
+		}
 		if !graderVar.MatchString(name) || strings.ContainsAny(g.Env[name], "\n\x00") {
 			return fmt.Errorf("env %s can't be passed to the grader", name)
 		}
@@ -195,10 +235,12 @@ func (g GradeSpec) check() error {
 
 // Grade builds the task's image (BuildGrader) and runs the hidden suite in a container of it: no network
 // but loopback, /app a read-write copy of the project, /tests the suite read only, /logs/verifier an empty
-// host folder, the label ygg.grader=<run>, the memory and CPU limits, and a timeout. It runs
-// `bash /tests/test.sh`. The container holds no other mount, and Grade always removes it, on success, on
-// failure, on a timeout and on cancellation. A container it can't remove is an error. Like Build it is not
-// for an agent's sandbox: no agent ever sees the container or the suite.
+// host folder for the suite's logs, the label ygg.grader=<run>, the memory and CPU limits, and a timeout. It runs
+// `bash /tests/test.sh`, with the environment variable YGG_SCORE_KEY set to the spec's key, and returns the
+// container's stdout, whole up to 32 MiB (over it, an error and no result). The container holds no other
+// mount, and Grade always removes it, on success, on failure, on a timeout and on cancellation. A container
+// it can't remove is an error. Like Build it is not for an agent's sandbox: no agent ever sees the container
+// or the suite.
 func (d *Driver) Grade(ctx context.Context, g GradeSpec) (res GradeResult, err error) {
 	if err := g.check(); err != nil {
 		return GradeResult{}, err
@@ -232,17 +274,32 @@ func (d *Driver) Grade(ctx context.Context, g GradeSpec) (res GradeResult, err e
 	for _, k := range sortedEnv(g.Env) {
 		args = append(args, "--env", k+"="+g.Env[k])
 	}
-	args = append(args,
+	args = append(args, "--env", scoreKeyVar+"="+g.ScoreKey,
 		"--mount", "type=bind,src="+src[0]+",dst="+GradeApp,
 		"--mount", "type=bind,src="+src[1]+",dst="+GradeTests+",ro=true",
 		"--mount", "type=bind,src="+src[2]+",dst="+GradeLogs,
 		ref, "bash", GradeTests+"/test.sh")
 	runCtx, cancel := context.WithTimeout(ctx, g.Timeout)
 	defer cancel()
-	out, runErr := d.run(runCtx, d.Podman, args...)
-	res = GradeResult{Image: ref}
+	// The stdout is captured apart from the stderr, with a bound: over it, the process group is killed (as
+	// for a timeout) and the bound's error wins over the timeout's, which only the context knows.
+	boundCtx, stop := context.WithCancel(runCtx)
+	defer stop()
+	cmd := d.command(boundCtx, d.Podman, args...)
+	stdout := &boundedBuffer{max: maxGradeStdout, over: stop}
+	var stderr bytes.Buffer
+	cmd.Stdout, cmd.Stderr = stdout, &stderr
+	runErr := cmd.Run()
+	switch {
+	case ctx.Err() != nil:
+	case stdout.full:
+		return GradeResult{}, fmt.Errorf("%w (%d MiB)", ErrGradeStdoutBound, maxGradeStdout>>20)
+	}
+	out := stdout.buf.Bytes()
+	res = GradeResult{Image: ref, Stdout: out}
 	if runErr != nil {
-		out = append(out, runErr.Error()...)
+		runErr = fmt.Errorf("podman %s: %w: %s", strings.Join(args, " "), runErr, strings.TrimSpace(stderr.String()))
+		out = append(out[:len(out):len(out)], runErr.Error()...)
 	}
 	res.Log = string(out[max(0, len(out)-maxGradeLog):])
 	var ee *exec.ExitError
