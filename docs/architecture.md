@@ -42,7 +42,12 @@ The harness: agent adapters, the devcontainer sandbox driver, policies and the c
   agent. A service may take the command its pack gives it, for an image that does nothing without one.
 - Grades a build (`Grade`, spec §11): builds the image of a benchmark task from its `environment/` folder
   (`BuildGrader`, with the rules of `BuildStack`, and a tag that is a hash of the folder), then runs
-  `bash /tests/test.sh` in one container of that image. The container has no network but loopback and three
+  `bash /tests/test.sh` in one container of that image, as `bash -c` with a tail that gives `/app` and
+  `/logs/verifier` to the container's root (`chown -hR 0:0`, errors ignored) and exits with the suite's own
+  status: the suite makes its user own `/app`, which on a rootless engine is a subuid of the host, and the
+  host user could not delete the copy afterwards. A container stopped from outside (timeout, cancel, stdout
+  bound) cannot run that tail, so `Grade` removes it and then runs a second, short container of the same image
+  (`<name>-chown`, `--rm`, no network, the two writable mounts only) that does the chown. The container has no network but loopback and three
   mounts: `/app` (the project, read and write), `/tests` (the suite, read only) and `/logs/verifier` (an empty
   folder for the suite's own logs, which nothing reads as a score). It has the label `ygg.grader=<run id>`,
   and it is always removed, after a pass, a failure, a timeout and a cancel. `Grade` refuses a path it could not mount safely before it runs

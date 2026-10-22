@@ -36,6 +36,11 @@ const (
 	GradeLogs  = "/logs/verifier" // an empty host folder for the suite's own logs; the score is not read from it
 )
 
+// gradeCommand is what the container runs: the suite, then the files of /app and the logs given back to the
+// container's root, which a rootless engine maps to the host user (the suite makes its own user own /app,
+// and that user is a subuid of the host, which could not delete the copy), then the suite's exit status.
+const gradeCommand = "bash " + GradeTests + "/test.sh; rc=$?; chown -hR 0:0 " + GradeApp + " " + GradeLogs + " 2>/dev/null || true; exit $rc"
+
 // ErrGradeTimeout means the suite did not end within the time it was given. The container is removed.
 var ErrGradeTimeout = errors.New("the grader timed out")
 
@@ -236,7 +241,7 @@ func (g GradeSpec) check() error {
 // Grade builds the task's image (BuildGrader) and runs the hidden suite in a container of it: no network
 // but loopback, /app a read-write copy of the project, /tests the suite read only, /logs/verifier an empty
 // host folder for the suite's logs, the label ygg.grader=<run>, the memory and CPU limits, and a timeout. It runs
-// `bash /tests/test.sh`, with the environment variable YGG_SCORE_KEY set to the spec's key, and returns the
+// the suite (`bash /tests/test.sh`, then a chown of /app and the logs to the container's root), with the environment variable YGG_SCORE_KEY set to the spec's key, and returns the
 // container's stdout, whole up to 32 MiB (over it, an error and no result). The container holds no other
 // mount, and Grade always removes it, on success, on failure, on a timeout and on cancellation. A container
 // it can't remove is an error. Like Build it is not for an agent's sandbox: no agent ever sees the container
@@ -256,12 +261,18 @@ func (d *Driver) Grade(ctx context.Context, g GradeSpec) (res GradeResult, err e
 		return GradeResult{}, err
 	}
 	name := "ygg-grader-" + g.Run + "-" + g.Task
+	killed := false // the container was stopped from outside, so the command's own chown never ran
 	defer func() {
 		// The caller's context may be over: the container is removed all the same.
 		rmCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Minute)
 		defer cancel()
 		if rmErr := d.RemoveGrader(rmCtx, name); rmErr != nil {
 			err = errors.Join(err, fmt.Errorf("removing the grader container %s: %w", name, rmErr))
+		}
+		if killed {
+			if chErr := d.giveBack(rmCtx, name+"-chown", ref, g.Run, src[0], src[2]); chErr != nil {
+				err = errors.Join(err, fmt.Errorf("giving the grader's files back: %w", chErr))
+			}
 		}
 	}()
 	args := []string{"run", "--name", name, "--label", LabelGrader + "=" + g.Run, "--network", "none"}
@@ -278,7 +289,7 @@ func (d *Driver) Grade(ctx context.Context, g GradeSpec) (res GradeResult, err e
 		"--mount", "type=bind,src="+src[0]+",dst="+GradeApp,
 		"--mount", "type=bind,src="+src[1]+",dst="+GradeTests+",ro=true",
 		"--mount", "type=bind,src="+src[2]+",dst="+GradeLogs,
-		ref, "bash", GradeTests+"/test.sh")
+		ref, "bash", "-c", gradeCommand)
 	runCtx, cancel := context.WithTimeout(ctx, g.Timeout)
 	defer cancel()
 	// The stdout is captured apart from the stderr, with a bound: over it, the process group is killed (as
@@ -290,6 +301,7 @@ func (d *Driver) Grade(ctx context.Context, g GradeSpec) (res GradeResult, err e
 	var stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = stdout, &stderr
 	runErr := cmd.Run()
+	killed = boundCtx.Err() != nil
 	switch {
 	case ctx.Err() != nil:
 	case stdout.full:
@@ -315,6 +327,17 @@ func (d *Driver) Grade(ctx context.Context, g GradeSpec) (res GradeResult, err e
 		return res, nil
 	}
 	return res, fmt.Errorf("podman could not run the grader (exit 125 to 127): %w", runErr)
+}
+
+// giveBack does what gradeCommand does after the suite, for a container that was killed before it could: a
+// short container of the same image, with the same two writable mounts and no network, that gives /app and the
+// logs to its root and ends. It carries the grader label, and --rm removes it.
+func (d *Driver) giveBack(ctx context.Context, name, ref, run, app, logs string) error {
+	_, err := d.run(ctx, d.Podman, "run", "--rm", "--name", name, "--label", LabelGrader+"="+run, "--network", "none",
+		"--mount", "type=bind,src="+app+",dst="+GradeApp,
+		"--mount", "type=bind,src="+logs+",dst="+GradeLogs,
+		ref, "chown", "-hR", "0:0", GradeApp, GradeLogs)
+	return err
 }
 
 // RemoveGrader removes a grader container, running or not. It is not an error if it is gone.

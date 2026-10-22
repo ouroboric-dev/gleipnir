@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -86,13 +88,128 @@ func TestGradeBuildsTheImageThenRunsTheSuiteWithoutANetworkAndRemovesTheContaine
 	args := runCall(t, log)
 	flags := " " + strings.Join(args, " ") + " "
 	for _, want := range []string{" --network none ", " --label ygg.grader=20261018-090000-a1b2c3 ", " --memory 4g ", " --cpus 4 ",
-		" --name ygg-grader-20261018-090000-a1b2c3-client-gallery-lite ", " --env WORKERS=4 ", " --env YGG_SCORE_KEY=" + testScoreKey + " ", " " + ref + " bash /tests/test.sh"} {
+		" --name ygg-grader-20261018-090000-a1b2c3-client-gallery-lite ", " --env WORKERS=4 ", " --env YGG_SCORE_KEY=" + testScoreKey + " ", " " + ref + " bash -c "} {
 		if !strings.Contains(flags, want) {
 			t.Errorf("podman run lacks %q:\n%s", want, flags)
 		}
 	}
-	if !strings.HasSuffix(flags, " "+ref+" bash /tests/test.sh ") {
+	if !strings.HasSuffix(flags, " "+ref+" bash -c "+graderCommand+" ") {
 		t.Errorf("the image and the command must end the line:\n%s", flags)
+	}
+}
+
+// graderCommand is the script the container runs: the suite, then the files given back to the container's
+// root (the host user, on a rootless engine), then the suite's own exit status.
+const graderCommand = "bash /tests/test.sh; rc=$?; chown -hR 0:0 /app /logs/verifier 2>/dev/null || true; exit $rc"
+
+// scriptOf returns the script of the one `podman run` in the log: what follows `bash -c`.
+func scriptOf(t *testing.T, log string) string {
+	t.Helper()
+	_, script, ok := strings.Cut(strings.Join(runCall(t, log), " "), " bash -c ")
+	if !ok {
+		t.Fatalf("podman run has no bash -c script:\n%s", logOf(t, log))
+	}
+	return script
+}
+
+func TestGradeGivesTheFilesBackToTheContainersRootAndKeepsTheSuitesExitStatus(t *testing.T) {
+	d, log, _ := fakeEngine(t)
+	if _, err := d.Grade(context.Background(), graderDirs(t, graderDockerfile)); err != nil {
+		t.Fatal(err)
+	}
+	script := scriptOf(t, log)
+	if script != graderCommand {
+		t.Fatalf("the script is %q, want %q", script, graderCommand)
+	}
+	// Run the script itself, with a bash that is the suite and a chown that records its arguments.
+	for _, c := range []struct {
+		suite, chown string
+	}{{"0", "0"}, {"1", "0"}, {"3", "0"}, {"0", "1"}, {"3", "1"}} { // a chown that fails changes nothing
+		bin := t.TempDir()
+		chowned := filepath.Join(bin, "chowned")
+		os.WriteFile(filepath.Join(bin, "bash"), []byte("#!/bin/sh\n[ \"$*\" = /tests/test.sh ] || exit 99\n[ -e \""+chowned+"\" ] && exit 98\nexit "+c.suite+"\n"), 0o755)
+		os.WriteFile(filepath.Join(bin, "chown"), []byte("#!/bin/sh\necho \"$*\" >> \""+chowned+"\"\nexit "+c.chown+"\n"), 0o755)
+		cmd := exec.Command("/bin/sh", "-c", script)
+		cmd.Env = []string{"PATH=" + bin + ":/usr/bin:/bin"}
+		err := cmd.Run()
+		code := 0
+		var ee *exec.ExitError
+		if errors.As(err, &ee) {
+			code = ee.ExitCode()
+		} else if err != nil {
+			t.Fatal(err)
+		}
+		if want, _ := strconv.Atoi(c.suite); code != want {
+			t.Errorf("suite exit %s, chown exit %s: the script exits %d", c.suite, c.chown, code)
+		}
+		if got, _ := os.ReadFile(chowned); string(got) != "-hR 0:0 /app /logs/verifier\n" {
+			t.Errorf("suite exit %s: chown was called with %q, want the two folders after the suite", c.suite, got)
+		}
+	}
+}
+
+func TestGradeReturnsTheSuitesExitStatus(t *testing.T) {
+	for _, code := range []string{"0", "1", "3"} {
+		d, _, _ := fakeEngine(t)
+		t.Setenv("STUB_RUN_EXIT", code)
+		res, err := d.Grade(context.Background(), graderDirs(t, graderDockerfile))
+		if want, _ := strconv.Atoi(code); err != nil || res.ExitCode != want {
+			t.Errorf("suite exit %s: Grade() = %+v, %v", code, res, err)
+		}
+	}
+}
+
+func TestGradeAfterAKillGivesTheFilesBackWithAShortRunOfTheSameImage(t *testing.T) {
+	cases := map[string]func(t *testing.T) (*Driver, string, GradeSpec, context.Context){
+		"a timeout": func(t *testing.T) (*Driver, string, GradeSpec, context.Context) {
+			d, log, _ := fakeEngine(t)
+			t.Setenv("STUB_RUN_SLEEP", "30")
+			gs := graderDirs(t, graderDockerfile)
+			gs.Timeout = 300 * time.Millisecond
+			return d, log, gs, context.Background()
+		},
+		"a cancellation": func(t *testing.T) (*Driver, string, GradeSpec, context.Context) {
+			d, log, _ := fakeEngine(t)
+			t.Setenv("STUB_RUN_SLEEP", "30")
+			ctx, cancel := context.WithCancel(context.Background())
+			time.AfterFunc(200*time.Millisecond, cancel)
+			return d, log, graderDirs(t, graderDockerfile), ctx
+		},
+	}
+	for name, mk := range cases {
+		d, log, gs, ctx := mk(t)
+		if _, err := d.Grade(ctx, gs); err == nil {
+			t.Fatalf("%s: Grade() = nil, want an error", name)
+		}
+		var lines []string
+		for _, l := range strings.Split(logOf(t, log), "\n") {
+			if strings.HasPrefix(l, "podman run ") || strings.HasPrefix(l, "podman rm ") {
+				lines = append(lines, l)
+			}
+		}
+		if len(lines) != 3 || !strings.HasPrefix(lines[1], "podman rm -f ") {
+			t.Fatalf("%s: want the run, the removal, then a second run:\n%s", name, strings.Join(lines, "\n"))
+		}
+		ref, _ := GraderImage(gs.Task, gs.Environment)
+		name2 := "ygg-grader-" + gs.Run + "-" + gs.Task + "-chown"
+		want := "podman run --rm --name " + name2 + " --label ygg.grader=" + gs.Run + " --network none" +
+			" --mount type=bind,src=" + engineSide(t, d, gs.App) + ",dst=/app" +
+			" --mount type=bind,src=" + engineSide(t, d, gs.Logs) + ",dst=/logs/verifier" +
+			" " + ref + " chown -hR 0:0 /app /logs/verifier"
+		if lines[2] != want {
+			t.Errorf("%s: the second run is\n%s\nwant\n%s", name, lines[2], want)
+		}
+	}
+}
+
+func TestGradeRunsNoSecondContainerWhenTheSuiteEnded(t *testing.T) {
+	for _, code := range []string{"0", "1"} {
+		d, log, _ := fakeEngine(t)
+		t.Setenv("STUB_RUN_EXIT", code)
+		if _, err := d.Grade(context.Background(), graderDirs(t, graderDockerfile)); err != nil {
+			t.Fatal(err)
+		}
+		runCall(t, log) // exactly one podman run
 	}
 }
 
