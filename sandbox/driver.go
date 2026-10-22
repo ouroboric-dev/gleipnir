@@ -341,8 +341,10 @@ done
 echo "processes are still running in the sandbox" >&2
 exit 1`
 
-// Down removes the sandbox's containers and networks. It finds them by label, so it works for a
-// sandbox this process never started, and it is safe to call twice.
+// Down removes the sandbox's containers, its pod and its networks. It finds the containers by label,
+// so it works for a sandbox this process never started, and it is safe to call twice. The pod is
+// the one compose named for the project (pod_ plus the project): compose leaves it behind when the
+// containers go (backlog B-138). It is removed without force, after the containers; no pod is no error.
 func (d *Driver) Down(ctx context.Context, env gungnir.Env) error {
 	if env.Project == "" {
 		return errors.New("no sandbox project to stop")
@@ -364,6 +366,9 @@ func (d *Driver) Down(ctx context.Context, env gungnir.Env) error {
 			errs = append(errs, err)
 		}
 	}
+	if err := d.removePod(ctx, env.Project); err != nil {
+		errs = append(errs, err)
+	}
 	for _, n := range []string{"default", ServicesNetwork} {
 		if _, err := d.run(ctx, d.Podman, "network", "exists", env.Project+"_"+n); err == nil {
 			if _, err := d.run(ctx, d.Podman, "network", "rm", "-f", env.Project+"_"+n); err != nil {
@@ -372,4 +377,14 @@ func (d *Driver) Down(ctx context.Context, env gungnir.Env) error {
 		}
 	}
 	return errors.Join(errs...)
+}
+
+// removePod removes the pod compose made for project, if there is one.
+func (d *Driver) removePod(ctx context.Context, project string) error {
+	pod := "pod_" + project
+	if _, err := d.run(ctx, d.Podman, "pod", "exists", pod); err != nil {
+		return nil
+	}
+	_, err := d.run(ctx, d.Podman, "pod", "rm", pod)
+	return err
 }
