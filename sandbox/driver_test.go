@@ -35,7 +35,8 @@ echo "env host=${CONTAINER_HOST:-} auth=${REGISTRY_AUTH_FILE:-} docker=${DOCKER_
 case "$1" in
   image) case " $STUB_MISSING " in *" $3 "*) exit 1 ;; esac; exit 0 ;;
   network) [ "$2" = exists ] && exit 0; exit 0 ;;
-  run) [ -z "$STUB_RUN_OUT" ] || cat "$STUB_RUN_OUT"
+  run) case "$*" in *-chown\ *) exit "${STUB_CHOWN_EXIT:-0}" ;; esac
+    [ -z "$STUB_RUN_OUT" ] || cat "$STUB_RUN_OUT"
     [ -z "$STUB_RUN_ERR" ] || cat "$STUB_RUN_ERR" >&2
     [ -z "$STUB_RUN_FLOOD" ] || exec yes
     [ -z "$STUB_RUN_SLEEP" ] || exec sleep "$STUB_RUN_SLEEP"
