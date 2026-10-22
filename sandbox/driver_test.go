@@ -41,6 +41,7 @@ case "$1" in
     [ -z "$STUB_RUN_SLEEP" ] || exec sleep "$STUB_RUN_SLEEP"
     exit "${STUB_RUN_EXIT:-0}" ;;
   rm) exit "${STUB_RM_EXIT:-0}" ;;
+  pod) case "$2" in exists) exit "${STUB_POD_EXISTS_EXIT:-0}" ;; rm) exit "${STUB_POD_RM_EXIT:-0}" ;; esac; exit 0 ;;
   ps) [ -z "$STUB_PS_SLEEP" ] || exec sleep "$STUB_PS_SLEEP"
     case "$*" in *service=fw*) echo fw456 ;; *) echo work123; echo fw456 ;; esac; exit 0 ;;
   exec)
@@ -289,6 +290,100 @@ func TestDownRemovesByLabelAndRepeats(t *testing.T) {
 	}
 	if err := d.Down(context.Background(), gungnir.Env{}); err == nil {
 		t.Error("Down with no project succeeded")
+	}
+}
+
+// Backlog B-138: compose leaves the run's pod behind when its containers go; Down removes it, by the
+// name compose gave it (pod_ + the compose project), never by a prefix.
+func TestDownRemovesTheSandboxsPod(t *testing.T) {
+	d, log, sp := fakeEngine(t)
+	env := gungnir.Env{Project: Project(sp), Container: "work123"}
+	if err := d.Down(context.Background(), env); err != nil {
+		t.Fatal(err)
+	}
+	got := logOf(t, log)
+	if !strings.Contains(got, "podman pod rm pod_"+env.Project+"\n") {
+		t.Errorf("Down didn't remove the sandbox's pod:\n%s", got)
+	}
+	if strings.Contains(got, "pod rm -f") || strings.Contains(got, "pod prune") {
+		t.Errorf("Down forced a pod's removal or pruned pods:\n%s", got)
+	}
+	if strings.Count(got, "pod rm") != 1 {
+		t.Errorf("Down should remove exactly one pod:\n%s", got)
+	}
+}
+
+func TestDownWithNoPodIsNotAnError(t *testing.T) {
+	d, log, sp := fakeEngine(t)
+	t.Setenv("STUB_POD_EXISTS_EXIT", "1")
+	if err := d.Down(context.Background(), gungnir.Env{Project: Project(sp), Container: "work123"}); err != nil {
+		t.Errorf("Down() = %v for a sandbox with no pod", err)
+	}
+	if strings.Contains(logOf(t, log), "pod rm") {
+		t.Error("Down tried to remove a pod that is not there")
+	}
+}
+
+func TestDownReportsAPodThatWillNotGo(t *testing.T) {
+	d, _, sp := fakeEngine(t)
+	t.Setenv("STUB_POD_RM_EXIT", "2")
+	if err := d.Down(context.Background(), gungnir.Env{Project: Project(sp), Container: "work123"}); err == nil {
+		t.Error("Down() hid a pod that could not be removed")
+	}
+}
+
+// The other runs' pods: Down names the pod of its own project and no other.
+func TestDownLeavesAnotherRunsPodAlone(t *testing.T) {
+	d, log, sp := fakeEngine(t)
+	other := sp
+	other.Run = "20261001-000000-ffffff"
+	if err := d.Down(context.Background(), gungnir.Env{Project: Project(sp), Container: "work123"}); err != nil {
+		t.Fatal(err)
+	}
+	if got := logOf(t, log); strings.Contains(got, "pod_"+Project(other)) {
+		t.Errorf("Down touched another run's pod:\n%s", got)
+	}
+}
+
+// A pod compose created and no container joined is listed; a pod with containers (Leftovers finds
+// those), and a pod the factory did not make, are not.
+func TestPodLeftoversListOnlyTheFactorysEmptyPods(t *testing.T) {
+	d, log, _ := fakeEngine(t)
+	list := filepath.Join(t.TempDir(), "podman")
+	os.WriteFile(list, []byte(`#!/bin/sh
+echo "podman $*" >> "$STUB_LOG"
+case "$1 $2" in
+  "pod ls") cat <<'JSON'
+[{"Name":"pod_ygg2026102123431691cfd3reposnotes182d8361","Status":"Created","Containers":[]},
+ {"Name":"pod_ygg2026101010000011aaaareposapp00112233","Status":"Running","Containers":[{"Id":"c1","Names":"x","Status":"running"}]},
+ {"Name":"pod_ygg2026101510000022bbbbreposapi99887766","Status":"Created","Containers":null},
+ {"Name":"pod_other","Status":"Created","Containers":[]},
+ {"Name":"zz-test","Status":"Created","Containers":[]}]
+JSON
+  ;;
+esac
+exit 0
+`), 0o755)
+	d.Podman = list
+	ls, err := d.PodLeftovers(context.Background())
+	if err != nil || len(ls) != 2 {
+		t.Fatalf("PodLeftovers() = %+v, %v; want the two empty pods of the factory", ls, err)
+	}
+	if ls[0].Project != "ygg2026101510000022bbbbreposapi99887766" || ls[0].Pod != "pod_"+ls[0].Project || ls[0].State != "Created" || ls[1].Project != "ygg2026102123431691cfd3reposnotes182d8361" {
+		t.Errorf("PodLeftovers() = %+v; want projects sorted, with the pod's name and state", ls)
+	}
+	if err := d.RemovePod(context.Background(), ls[0]); err != nil {
+		t.Fatal(err)
+	}
+	if got := logOf(t, log); !strings.Contains(got, "podman pod rm "+ls[0].Pod+"\n") || strings.Contains(got, "pod rm -f") {
+		t.Errorf("RemovePod didn't remove that pod alone:\n%s", got)
+	}
+}
+
+func TestRunPrefixMatchesTheProjectsOfThatRun(t *testing.T) {
+	_, _, sp := fakeEngine(t)
+	if !strings.HasPrefix(Project(sp), RunPrefix(sp.Run)) || strings.HasPrefix(Project(sp), RunPrefix("20261001-000000-ffffff")) {
+		t.Errorf("RunPrefix(%q) = %q does not tell the projects of runs apart (%s)", sp.Run, RunPrefix(sp.Run), Project(sp))
 	}
 }
 

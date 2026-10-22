@@ -32,6 +32,10 @@ The harness: agent adapters, the devcontainer sandbox driver, policies and the c
   workspace (spec §3.3). A sandbox with no stack (a spec with no `Stack`, as a scratch session's) runs on Gleipnir's
   factory stack, the pinned Node image plus git (`FactoryStack`), under the factory layer: `FactoryImages()`,
   which a caller sets as `Config.Images`. `BuildFactory` builds both, pulling the Node image once.
+- Tears a sandbox down with `Down`: it removes the containers by label, then the compose pod (`pod_` plus the
+  project, which compose leaves behind and `podman pod prune` keeps while it is Created; removed without
+  force, and no pod is no error), then the networks. `PodLeftovers` lists the factory's pods that hold no
+  container, for `ygg doctor`, and `RemovePod` removes one; `RunPrefix` ties a pod's project to a run id.
 - Builds a realm's stack from the realm's build context (`BuildStack`, for `ygg sandbox build`): only
   from images pinned by digest and the Containerfile's own stages, with the isolated registry auth, and
   tagged with a hash of the context. The check scripts a realm bakes into its stack are read-only for the

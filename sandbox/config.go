@@ -113,6 +113,12 @@ func Project(s gungnir.SandboxSpec) string {
 	return "ygg" + regexp.MustCompile(`[^a-z0-9]`).ReplaceAllString(strings.ToLower(s.Run+s.Name), "") + hex.EncodeToString(sum[:4])
 }
 
+// RunPrefix returns what every Project of the run starts with, so a pod's project can be tied to a
+// run id. Run ids are fixed-width, so one run's prefix is not another's.
+func RunPrefix(run string) string {
+	return "ygg" + regexp.MustCompile(`[^a-z0-9]`).ReplaceAllString(strings.ToLower(run), "")
+}
+
 // ConfigDir returns the folder under work where the sandbox of spec keeps its configuration: its
 // project name, so no two sandboxes of a run share one.
 func ConfigDir(work string, s gungnir.SandboxSpec) string { return filepath.Join(work, Project(s)) }
