@@ -1,0 +1,10 @@
+--check
+go-contract-sqlc
+--exit
+0
+--duration-ms
+700
+--format
+sqlc-text
+--input
+input

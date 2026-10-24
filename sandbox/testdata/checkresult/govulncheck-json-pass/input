@@ -1,0 +1,4 @@
+{"config":{"protocol_version":"v1.0.0","scanner_name":"govulncheck","scanner_version":"v1.8.0","db":"https://vuln.go.dev","db_last_modified":"2026-10-20T15:04:05Z","go_version":"go1.26.10","scan_level":"symbol","scan_mode":"source"}}
+{"progress":{"message":"Scanning your code and 214 packages across 9 dependent modules for known vulnerabilities..."}}
+{"osv":{"schema_version":"1.3.1","id":"GO-2024-2687","modified":"2024-04-04T10:00:00Z","published":"2024-04-03T10:00:00Z","aliases":["CVE-2023-45288"],"summary":"HTTP/2 CONTINUATION flood in net/http","details":"An attacker may cause an HTTP/2 endpoint to read arbitrary amounts of header data.","affected":[{"package":{"name":"stdlib","ecosystem":"Go"}}]}}
+{"finding":{"osv":"GO-2024-2687","fixed_version":"v1.22.2","trace":[{"module":"stdlib","version":"v1.22.1"}]}}

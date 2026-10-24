@@ -1,0 +1,29 @@
+{
+  "check": "web-e2e",
+  "passed": false,
+  "exit_code": 1,
+  "timed_out": false,
+  "duration_ms": 5000,
+  "counts": {
+    "run": 5,
+    "passed": 3,
+    "failed": 1,
+    "skipped": 1
+  },
+  "failures": [
+    {
+      "kind": "test",
+      "location": "e2e/p.spec.ts:4:35",
+      "message": "Error: expect(received).toBe(expected) // Object.is equality\n\nExpected: 2\nReceived: 1",
+      "test": "p.spec.ts > suite > fails"
+    }
+  ],
+  "passed_tests": [
+    "p.spec.ts > top",
+    "p.spec.ts > suite > passes",
+    "p.spec.ts > suite > flaky one"
+  ],
+  "notes": [
+    "Flaky tests (failed, then passed on a retry) count as passed: 1: p.spec.ts > suite > flaky one."
+  ]
+}

@@ -1,0 +1,10 @@
+--check
+go-static-vet
+--exit
+0
+--duration-ms
+900
+--format
+go-vet-json
+--input
+input

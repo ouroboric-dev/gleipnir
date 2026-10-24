@@ -1,0 +1,36 @@
+{
+  "check": "test",
+  "passed": false,
+  "exit_code": 1,
+  "timed_out": false,
+  "duration_ms": 4210,
+  "counts": {
+    "run": 12,
+    "passed": 9,
+    "failed": 3,
+    "skipped": 0
+  },
+  "failures": [
+    {
+      "kind": "test",
+      "test": "TestSignup",
+      "location": "a\rb:1",
+      "message": "expected 201, got 500"
+    },
+    {
+      "kind": "test",
+      "test": "TestLogin",
+      "location": "api/auth_test.go:58",
+      "message": "expected token"
+    },
+    {
+      "kind": "test",
+      "test": "TestLogout/expired",
+      "location": "api/auth_test.go:90:7",
+      "message": "nil pointer dereference"
+    }
+  ],
+  "notes": [
+    "go test -json"
+  ]
+}

@@ -1,0 +1,12 @@
+--check
+web-unit
+--exit
+1
+--duration-ms
+900
+--format
+vitest-json
+--input
+input
+--root
+/work

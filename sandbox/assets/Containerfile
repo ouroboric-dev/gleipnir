@@ -1,6 +1,6 @@
 # The factory layer of a leaf's sandbox (spec §6.1). Two targets:
-#   work  the realm's stack image, plus the agent CLIs pinned to exact versions, gitleaks, and
-#         managed settings; it holds no credential and no auto-update.
+#   work  the realm's stack image, plus the agent CLIs pinned to exact versions, gitleaks, ygg-submit,
+#         ygg-check-result and managed settings; it holds no credential and no auto-update.
 #   fw    the firewall sidecar: iptables, dnsmasq (it answers the work container's DNS queries, see egress.sh)
 #         and nothing else of the stack.
 # Built by the driver with isolated registry auth and --pull=never, after it pulled the bases by digest.
@@ -21,6 +21,22 @@ RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certifi
  && tar -xzf /tmp/gitleaks.tgz -C /opt/ygg/bin gitleaks \
  && cp /usr/local/bin/node /opt/ygg/bin/node
 
+# ygg-submit (the stdio MCP server a session hands its typed output back through) and what it reads: ajv and the
+# contracts' schemas. The script is installed under its .mjs name, with a link for the name an MCP config starts,
+# so node reads it as a module whatever its version's detection of syntax is.
+# Its own prefix: a local install into /opt/ygg/lib would prune the CLIs, which sit in /opt/ygg/lib/node_modules.
+COPY submit/ /opt/ygg/lib/ygg-submit/
+RUN npm ci --prefix /opt/ygg/lib/ygg-submit --no-audit --no-fund \
+ && npm cache clean --force
+COPY ygg-submit.mjs /opt/ygg/bin/ygg-submit.mjs
+COPY schemas /opt/ygg/schemas
+RUN chmod 0755 /opt/ygg/bin/ygg-submit.mjs && ln -s ygg-submit.mjs /opt/ygg/bin/ygg-submit
+
+# ygg-check-result (a check script's converter from its tool's machine output to ygg.check/v1): node's standard
+# library only, installed the same way.
+COPY ygg-check-result.mjs /opt/ygg/bin/ygg-check-result.mjs
+RUN chmod 0755 /opt/ygg/bin/ygg-check-result.mjs && ln -s ygg-check-result.mjs /opt/ygg/bin/ygg-check-result
+
 FROM ${NODE_IMAGE} AS fw
 RUN apt-get update && apt-get install -y --no-install-recommends iptables dnsmasq-base \
  && rm -rf /var/lib/apt/lists/*
@@ -28,7 +44,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends iptables dnsmas
 FROM ${STACK_IMAGE} AS work
 COPY --from=tools /opt/ygg /opt/ygg
 RUN command -v bash >/dev/null && command -v timeout >/dev/null && command -v git >/dev/null \
- || { echo "the stack image needs bash, timeout and git" >&2; exit 1; }
+ && command -v sh >/dev/null && command -v realpath >/dev/null && command -v head >/dev/null && command -v env >/dev/null \
+ || { echo "the stack image needs bash, timeout, git, sh, realpath, head and env" >&2; exit 1; }
 RUN mkdir -p /home/ygg /etc/claude-code && chmod 1777 /home/ygg
 COPY managed-settings.json /etc/claude-code/managed-settings.json
 ENV PATH=/opt/ygg/bin:$PATH \

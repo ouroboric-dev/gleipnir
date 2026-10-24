@@ -1,6 +1,6 @@
 {
   "allowManagedHooksOnly": true,
   "allowManagedMcpServersOnly": true,
-  "allowedMcpServers": [],
+  "allowedMcpServers": [{ "serverCommand": ["/opt/ygg/bin/ygg-submit"] }],
   "disableBypassPermissionsMode": "disable"
 }

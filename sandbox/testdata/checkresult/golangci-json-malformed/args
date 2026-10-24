@@ -1,0 +1,10 @@
+--check
+go-static-lint
+--exit
+1
+--duration-ms
+5
+--format
+golangci-json
+--input
+input

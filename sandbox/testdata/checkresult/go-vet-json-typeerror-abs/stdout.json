@@ -1,0 +1,10 @@
+{
+	"example.com/app/internal/web": {
+		"unusedresult": [
+			{
+				"posn": "/work/internal/web/web.go:9:2",
+				"message": "result of fmt.Sprintf call not used"
+			}
+		]
+	}
+}

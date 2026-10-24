@@ -18,7 +18,10 @@ import (
 
 // Script says what each attempt of each node does: steps[node][attempt-1].
 type Script struct {
-	Steps map[string][]Step `yaml:"steps"`
+	// Submits says the adapter hands typed output back, as the real ones do (gungnir.Submitter); a step's
+	// submitted document needs it.
+	Submits bool              `yaml:"submits"`
+	Steps   map[string][]Step `yaml:"steps"`
 }
 
 // Step is one attempt. Exactly one of Result, Hang and Error is set.
@@ -81,12 +84,18 @@ type Outcome struct {
 	// writes it: a findings document built from these findings. A step sets at most one of them.
 	Output string            `yaml:"output"`
 	Report []gungnir.Finding `yaml:"report"`
+	// Submitted is the output document of the session's last accepted submit, as a JSON object; empty for none.
+	Submitted string `yaml:"submitted"`
 }
 
 // Agent replays a Script.
 type Agent struct{ script Script }
 
 var _ gungnir.Agent = (*Agent)(nil)
+var _ gungnir.Submitter = (*Agent)(nil)
+
+// Submits is the script's own word: true when it says submits: true.
+func (a *Agent) Submits() bool { return a.script.Submits }
 
 // Load reads and checks a script. A script that could be read two ways is refused.
 func Load(path string) (*Agent, error) {
@@ -106,7 +115,11 @@ func Load(path string) (*Agent, error) {
 	}
 	for node, steps := range s.Steps {
 		for i, st := range steps {
-			if err := st.check(); err != nil {
+			err := st.check()
+			if err == nil && st.Result != nil && st.Result.Submitted != "" && !s.Submits {
+				err = errors.New("a submitted document needs submits: true")
+			}
+			if err != nil {
 				return nil, fmt.Errorf("%s: steps.%s[%d]: %w", path, node, i, err)
 			}
 		}
@@ -130,6 +143,12 @@ func (st Step) check() error {
 	if o := st.Result; o != nil {
 		if o.Output != "" && o.Report != nil {
 			return errors.New("a result sets at most one of output and report")
+		}
+		if o.Submitted != "" {
+			var doc map[string]json.RawMessage
+			if err := json.Unmarshal([]byte(o.Submitted), &doc); err != nil || doc == nil {
+				return errors.New("a submitted document is one JSON object")
+			}
 		}
 		if o.Failure != "" && o.Status != gungnir.StatusFailed {
 			return errors.New("a result with a failure kind has status failed")
@@ -220,6 +239,10 @@ func (a *Agent) Run(ctx context.Context, t gungnir.Task) (gungnir.Result, error)
 		}
 		output = string(b)
 	}
+	var submitted []byte
+	if o.Submitted != "" {
+		submitted = []byte(o.Submitted)
+	}
 	return gungnir.Result{
 		Status:         o.Status,
 		Summary:        o.Summary,
@@ -229,6 +252,7 @@ func (a *Agent) Run(ctx context.Context, t gungnir.Task) (gungnir.Result, error)
 		Failure:        o.Failure,
 		Output:         output,
 		TranscriptPath: transcript,
+		Submitted:      submitted,
 	}, nil
 }
 

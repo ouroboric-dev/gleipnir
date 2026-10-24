@@ -1,0 +1,17 @@
+{
+  "check": "go-contract-api",
+  "passed": false,
+  "exit_code": 1,
+  "timed_out": false,
+  "duration_ms": 450,
+  "failures": [
+    {
+      "kind": "policy",
+      "message": "GET /pets: removed the required property 'name' from the response with the '200' status (response-required-property-removed)"
+    },
+    {
+      "kind": "policy",
+      "message": "DELETE /pets/{id}: api path removed without deprecation (api-path-removed-without-deprecation)"
+    }
+  ]
+}

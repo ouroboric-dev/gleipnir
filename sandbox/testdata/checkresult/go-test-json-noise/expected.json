@@ -1,0 +1,11 @@
+{
+  "check": "go-unit",
+  "passed": true,
+  "exit_code": 0,
+  "timed_out": false,
+  "duration_ms": 5,
+  "counts": {"run": 1, "passed": 1, "failed": 0, "skipped": 0},
+  "failures": [],
+  "passed_tests": ["p.TestA"],
+  "notes": ["skipped 2 lines that are not JSON"]
+}

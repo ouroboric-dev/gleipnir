@@ -1,0 +1,10 @@
+--check
+go-unit
+--exit
+0
+--duration-ms
+5
+--format
+go-test-json
+--input
+input

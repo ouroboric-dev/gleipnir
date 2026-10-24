@@ -1,0 +1,27 @@
+{
+  "check": "go-unit",
+  "passed": false,
+  "exit_code": 1,
+  "timed_out": false,
+  "duration_ms": 300,
+  "counts": {
+    "run": 2,
+    "passed": 0,
+    "failed": 2,
+    "skipped": 0
+  },
+  "failures": [
+    {
+      "kind": "test",
+      "test": "x.TestA",
+      "location": "x_test.go:8",
+      "message": "x_test.go:8: a broke"
+    },
+    {
+      "kind": "test",
+      "test": "x.TestB",
+      "location": "x_test.go:11",
+      "message": "x_test.go:11: about to exit"
+    }
+  ]
+}

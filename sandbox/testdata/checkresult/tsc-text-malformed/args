@@ -1,0 +1,10 @@
+--check
+web-static
+--exit
+2
+--duration-ms
+5
+--format
+tsc-text
+--input
+input

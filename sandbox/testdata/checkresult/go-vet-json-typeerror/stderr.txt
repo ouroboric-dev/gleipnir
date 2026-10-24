@@ -1,0 +1,2 @@
+# example.com/app/internal/store
+vet: internal/store/store.go:4:9: undefined: undefinedThing

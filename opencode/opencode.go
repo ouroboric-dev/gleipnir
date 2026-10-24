@@ -22,6 +22,7 @@ import (
 
 	"github.com/ouroboric-dev/gleipnir/bounded"
 	"github.com/ouroboric-dev/gleipnir/failure"
+	"github.com/ouroboric-dev/gleipnir/submit"
 	"github.com/ouroboric-dev/gungnir"
 )
 
@@ -100,6 +101,11 @@ func New(model string, cfg Config) (*Agent, error) {
 
 func (a *Agent) Name() string { return "opencode" }
 
+// Submits says that the adapter hands a session's typed output back through ygg-submit (gungnir.Submitter).
+func (a *Agent) Submits() bool { return true }
+
+var _ gungnir.Submitter = (*Agent)(nil)
+
 func (a *Agent) getenv(k string) string {
 	if a.cfg.Getenv != nil {
 		return a.cfg.Getenv(k)
@@ -135,6 +141,13 @@ func (a *Agent) ConfigJSON(t gungnir.Task) (string, error) {
 	}
 	if t.MaxTurns > 0 {
 		c["agent"] = map[string]any{"build": map[string]any{"steps": t.MaxTurns}}
+	}
+	if t.Output != "" {
+		// The one MCP server of the session: ygg-submit by its command, with no arguments, and the contract in its
+		// environment. Project configuration is switched off (OPENCODE_DISABLE_PROJECT_CONFIG), so no other server
+		// can be named. MCP tools are allowed by opencode's default, so a read-only role needs no permission key.
+		c["mcp"] = map[string]any{submit.Server: map[string]any{"type": "local", "command": []string{submit.Command},
+			"environment": map[string]string{submit.ContractVar: t.Output}}}
 	}
 	if t.ReadOnly {
 		c["permission"] = map[string]any{"edit": "deny", "bash": "deny", "webfetch": "deny", "external_directory": "deny", "task": "deny", "question": "deny"}
@@ -239,7 +252,54 @@ func (a *Agent) Run(ctx context.Context, t gungnir.Task) (gungnir.Result, error)
 			Err: fmt.Errorf("opencode: %w (exit %d; stderr: %s)", err, res.ExitCode, tail(string(errOut.Bytes())))}
 	}
 	r.TranscriptPath, r.Provider, r.CLIVersion = transcriptPath(t), "openrouter", version
+	if t.Output != "" {
+		// A read failure is an error, not a nil Submitted: Result has no field to say why, and Odin would repair
+		// blind. The session's usage goes with it.
+		if r.Submitted, err = lastSubmit(ctx, t, out.Bytes()); err != nil {
+			return gungnir.Result{}, &gungnir.SessionError{Kind: gungnir.FailureAgent, Usage: used, Err: fmt.Errorf("opencode: %w", err)}
+		}
+	}
 	return r, nil
+}
+
+// lastSubmit is the output document of the last call of the ygg_submit tool whose result accepted it, or nil.
+// opencode prints a tool call as one tool_use event whose part holds the call's input and its output.
+func lastSubmit(ctx context.Context, t gungnir.Task, stream []byte) ([]byte, error) {
+	tr := submit.NewTracker(t.Output)
+	sc := bufio.NewScanner(bytes.NewReader(stream))
+	sc.Buffer(make([]byte, 1<<20), 64<<20)
+	for sc.Scan() {
+		line := bytes.TrimSpace(sc.Bytes())
+		if len(line) == 0 || line[0] != '{' || !bytes.Contains(line, []byte(submit.Server+"_submit")) {
+			continue
+		}
+		var e struct {
+			Type string `json:"type"`
+			Part struct {
+				Type   string `json:"type"`
+				CallID string `json:"callID"`
+				Tool   string `json:"tool"`
+				State  struct {
+					Status string          `json:"status"`
+					Input  json.RawMessage `json:"input"`
+					Output string          `json:"output"`
+				} `json:"state"`
+			} `json:"part"`
+		}
+		if json.Unmarshal(line, &e) != nil || e.Type != "tool_use" || e.Part.Tool != submit.Server+"_submit" {
+			continue
+		}
+		tr.Call(e.Part.CallID, e.Part.State.Input)
+		tr.Result(e.Part.CallID, e.Part.State.Output, e.Part.State.Status != "completed")
+	}
+	if err := sc.Err(); err != nil {
+		return nil, err
+	}
+	input := tr.Last()
+	if input == nil {
+		return nil, nil
+	}
+	return submit.Document(ctx, t.Sandbox, input)
 }
 
 // version asks the tool for its version in the sandbox. A session that can't say is still a

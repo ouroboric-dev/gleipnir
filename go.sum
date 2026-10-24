@@ -1,7 +1,7 @@
 github.com/dlclark/regexp2 v1.11.0 h1:G/nrcoOa7ZXlpoa/91N3X7mM3r8eIlMBBJZvsz/mxKI=
 github.com/dlclark/regexp2 v1.11.0/go.mod h1:DHkYz0B9wPfa6wondMfaivmHpzrQ3v9q8cnmRbL6yW8=
-github.com/ouroboric-dev/gungnir v0.0.0-20261021195316-32cc95d9d0ff h1:Siy/1iS8yIfvxJ1qemT/np96bo4zZ+DB1uA+CH3Mn6g=
-github.com/ouroboric-dev/gungnir v0.0.0-20261021195316-32cc95d9d0ff/go.mod h1:NEj+bRbIgN2QLv8AbnDF4CAn9IYV0m/8i4j25unu10s=
+github.com/ouroboric-dev/gungnir v0.0.0-20261024193126-ede2b3dd29e7 h1:LlNMSppRyLS6DlelWsJwvy5lYTRyNGgf1JvucNqPvvI=
+github.com/ouroboric-dev/gungnir v0.0.0-20261024193126-ede2b3dd29e7/go.mod h1:z3F30cYdzuB/d9bBWqOrVqoJxgFpFySAOdZToIBNxRI=
 github.com/ouroboric-dev/havamal v0.0.0-20261016183637-e7b4e47b4785 h1:pE5v9ES/EPArdNoSH0NPDlDHf4vgG80S+KJV4O0w3HM=
 github.com/ouroboric-dev/havamal v0.0.0-20261016183637-e7b4e47b4785/go.mod h1:wGR2yR184wSq86n1p4tPv/nqgq3O8+JLw7b5Rw6+BPo=
 github.com/santhosh-tekuri/jsonschema/v6 v6.0.3 h1:1EYB5IzjZawrrnELUi78f9fPu57HuXjmddZPjrls/28=

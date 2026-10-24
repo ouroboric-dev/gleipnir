@@ -1,0 +1,28 @@
+# example.com/app/internal/store
+{
+	"example.com/app/internal/store": {
+		"printf": [
+			{
+				"posn": "/work/internal/store/store.go:31:2",
+				"message": "fmt.Printf format %d has arg name of wrong type string"
+			}
+		]
+	}
+}
+# example.com/app/internal/api
+{
+	"example.com/app/internal/api": {
+		"copylocks": [
+			{
+				"posn": "/work/internal/api/server.go:57:9",
+				"message": "return copies lock value: example.com/app/internal/api.Server contains sync.Mutex"
+			}
+		],
+		"unusedresult": [
+			{
+				"posn": "/work/internal/api/server.go:80:3",
+				"message": "result of fmt.Sprintf call not used"
+			}
+		]
+	}
+}

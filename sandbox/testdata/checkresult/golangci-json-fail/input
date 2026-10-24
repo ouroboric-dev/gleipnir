@@ -1,0 +1,54 @@
+{
+  "Issues": [
+    {
+      "FromLinter": "errcheck",
+      "Text": "Error return value of `os.Remove` is not checked",
+      "Severity": "",
+      "SourceLines": [
+        "\tos.Remove(p)"
+      ],
+      "Pos": {
+        "Filename": "internal/store/store.go",
+        "Offset": 812,
+        "Line": 57,
+        "Column": 11
+      }
+    },
+    {
+      "FromLinter": "staticcheck",
+      "Text": "SA4006: this value of `err` is never used",
+      "Severity": "",
+      "SourceLines": [
+        "\terr := run()"
+      ],
+      "Pos": {
+        "Filename": "cmd/app/main.go",
+        "Offset": 300,
+        "Line": 14,
+        "Column": 2
+      }
+    },
+    {
+      "FromLinter": "typecheck",
+      "Text": ": # example.com/app/internal/api\ninternal/api/server.go:9:2: undefined: Missing",
+      "Severity": "",
+      "SourceLines": [
+        "\tMissing()"
+      ],
+      "Pos": {
+        "Filename": "internal/api/server.go",
+        "Offset": 90,
+        "Line": 1,
+        "Column": 0
+      }
+    }
+  ],
+  "Report": {
+    "Linters": [
+      {
+        "Name": "errcheck",
+        "Enabled": true
+      }
+    ]
+  }
+}

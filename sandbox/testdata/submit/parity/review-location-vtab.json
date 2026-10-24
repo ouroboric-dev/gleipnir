@@ -1,0 +1,32 @@
+{
+  "findings": [
+    {
+      "id": "spec-1",
+      "source": "spec",
+      "severity": "blocker",
+      "location": "a\u000bb:1",
+      "claim": "The signup route has no throttle.",
+      "status": "open"
+    },
+    {
+      "id": "spec-2",
+      "source": "spec",
+      "severity": "minor",
+      "location": "api/auth.go:42",
+      "claim": "The signup route has no throttle.",
+      "status": "fixed",
+      "proof": "api/auth.go:51 adds it; the check test passed."
+    },
+    {
+      "id": "spec-3",
+      "source": "spec",
+      "severity": "major",
+      "location": "web/app.ts:10-20",
+      "claim": "The signup route has no throttle.",
+      "status": "disputed"
+    }
+  ],
+  "notes": [
+    "The diff touches generated files."
+  ]
+}

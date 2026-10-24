@@ -271,12 +271,12 @@ steps:
 	if err != nil {
 		t.Fatal(err)
 	}
-	rep, perr := schema.ParseReport([]byte(r.Output))
+	rep, perr := schema.Decode[schema.Review](schema.ContractReview, []byte(r.Output))
 	if perr != nil || len(rep.Findings) != 2 || rep.Findings[1].Proof == "" || rep.Findings[0].Location != "api/auth.go:42" {
 		t.Errorf("attempt 2: report %+v, %v from %q", rep, perr, r.Output)
 	}
 	r, err = run(t, a, "review", 3)
-	if rep, perr := schema.ParseReport([]byte(r.Output)); err != nil || perr != nil || len(rep.Findings) != 0 {
+	if rep, perr := schema.Decode[schema.Review](schema.ContractReview, []byte(r.Output)); err != nil || perr != nil || len(rep.Findings) != 0 {
 		t.Errorf("attempt 3: an empty report must be a well-formed report with no findings: %q, %v, %v", r.Output, perr, err)
 	}
 }
@@ -315,5 +315,46 @@ func TestTheTranscriptRecordsWhatTheSessionWasGiven(t *testing.T) {
 	}
 	if err := json.Unmarshal(b, &got); err != nil || got.Prompt != "Build it." || got.MaxTurns != 7 || !got.ReadOnly {
 		t.Errorf("the transcript = %s, %v", b, err)
+	}
+}
+
+func TestAScriptedStepSubmitsItsDocument(t *testing.T) {
+	a := load(t, `
+submits: true
+steps:
+  review:
+    - result: { status: ok, submitted: '{"findings":[]}' }
+    - result: { status: ok }
+`)
+	var _ gungnir.Submitter = a
+	if !a.Submits() {
+		t.Error("Submits() = false for a script that says submits: true")
+	}
+	r, err := a.Run(context.Background(), gungnir.Task{Node: "review", Attempt: 1, Workdir: t.TempDir(), Output: "ygg.review/v1"})
+	if err != nil || string(r.Submitted) != `{"findings":[]}` {
+		t.Errorf("attempt 1: Submitted = %q, %v", r.Submitted, err)
+	}
+	r, err = a.Run(context.Background(), gungnir.Task{Node: "review", Attempt: 2, Workdir: t.TempDir(), Output: "ygg.review/v1"})
+	if err != nil || r.Submitted != nil {
+		t.Errorf("attempt 2: Submitted = %q, %v; want nil", r.Submitted, err)
+	}
+	if load(t, "steps:\n  review:\n    - result: { status: ok }\n").Submits() {
+		t.Error("a script that does not say submits: true submits")
+	}
+}
+
+func TestASubmittedDocumentNeedsASubmittingScript(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "script.yaml")
+	for name, script := range map[string]string{
+		"without submits": "steps:\n  review:\n    - result: { status: ok, submitted: '{}' }\n",
+		"not an object":   "submits: true\nsteps:\n  review:\n    - result: { status: ok, submitted: '[1]' }\n",
+		"not JSON":        "submits: true\nsteps:\n  review:\n    - result: { status: ok, submitted: 'findings' }\n",
+	} {
+		if err := os.WriteFile(p, []byte(script), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := Load(p); err == nil {
+			t.Errorf("%s: Load() = nil, want an error", name)
+		}
 	}
 }

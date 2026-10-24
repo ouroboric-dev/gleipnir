@@ -1,0 +1,22 @@
+{
+  "check": "web-unit",
+  "passed": false,
+  "exit_code": 1,
+  "timed_out": false,
+  "duration_ms": 900,
+  "counts": {
+    "run": 1,
+    "passed": 1,
+    "failed": 0,
+    "skipped": 0
+  },
+  "failures": [
+    {
+      "kind": "test",
+      "message": "src/broken.test.ts: Cannot find module './does-not-exist' imported from /work/src/broken.test.ts"
+    }
+  ],
+  "passed_tests": [
+    "src/b.test.ts > works"
+  ]
+}

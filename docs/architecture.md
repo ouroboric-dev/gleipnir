@@ -19,6 +19,17 @@ The harness: agent adapters, the devcontainer sandbox driver, policies and the c
   deepseek-v4-flash took its prompt for an empty message in that state (v0-H17). Another value is an error from
   `New` and `ConfigJSON`. The `claude-code` and `scripted` adapters ignore the setting. Whether OpenRouter rejects
   `low` or `medium` for a model that does not support them is unverified.
+- Hands a session's typed output back (change typed-boundaries). A task with `Output` set gets one MCP server,
+  `ygg`: Claude Code through `--mcp-config` (with `--strict-mcp-config` kept, so a leaf's `.mcp.json` is never
+  read), opencode through the `mcp` key of its configuration (with project configuration switched off). Both start
+  exactly `/opt/ygg/bin/ygg-submit` with no arguments and the contract in `YGG_OUTPUT_CONTRACT`. Each adapter
+  reads its stream and sets `Result.Submitted` to the output document of the last `submit` call whose tool result
+  was `accepted: the document is a valid <contract>`; a call that named a draft file is read through the sandbox
+  afterwards (`head -c`, at most 4 MiB, under `out/`), and a draft that cannot be read fails the session as an
+  agent failure, with the reason. No accepted call leaves `Submitted` nil. Each adapter implements
+  `gungnir.Submitter`; the scripted one by `submits: true` and a step's `submitted`. The `contract` package holds
+  the suite every adapter passes. If a CLI cannot run the server, its adapter drops the config and Odin reads the
+  strict whole answer.
 - Loads skills explicitly per task, from Havamal at a pinned version (spec §5.1).
 - Runs commands in sandboxes and applies policies: devcontainer hardening, managed settings and
   the egress firewall (spec §6).
@@ -32,6 +43,15 @@ The harness: agent adapters, the devcontainer sandbox driver, policies and the c
   workspace (spec §3.3). A sandbox with no stack (a spec with no `Stack`, as a scratch session's) runs on Gleipnir's
   factory stack, the pinned Node image plus git (`FactoryStack`), under the factory layer: `FactoryImages()`,
   which a caller sets as `Config.Images`. `BuildFactory` builds both, pulling the Node image once.
+- Carries `ygg-submit` in the work image: a stdio MCP server (`ygg`, protocol 2025-06-18) through which a session
+  hands back its typed output. Its `submit` tool takes the output or a draft file under `out/` and its `check` tool
+  takes a draft; both validate against the contract in `$YGG_OUTPUT_CONTRACT` (one of gungnir's `schema.Contracts()`,
+  by its exact id; any other is refused) with ajv 8.17.1 and the schemas of gungnir's `schema.SchemaFS()`, answer
+  `accepted` or the errors, and write nothing. The managed settings allow
+  exactly that one MCP server, by command (`serverCommand: ["/opt/ygg/bin/ygg-submit"]`), because a name would admit any
+  command a leaf's `.mcp.json` gave it. An adapter must start exactly `/opt/ygg/bin/ygg-submit` with no arguments and
+  pass the contract in `YGG_OUTPUT_CONTRACT`. The ajv tree comes from a lock file (`npm ci`), and the image tag hashes
+  the script, the ajv pin, both package files and every schema.
 - Tears a sandbox down with `Down`: it removes the containers by label, then the compose pod (`pod_` plus the
   project, which compose leaves behind and `podman pod prune` keeps while it is Created; removed without
   force, and no pod is no error), then the networks. `PodLeftovers` lists the factory's pods that hold no
@@ -57,7 +77,10 @@ The harness: agent adapters, the devcontainer sandbox driver, policies and the c
   returns an error and no result. `Grade` reads no score: the line the suite prints on stdout is the score, and
   Odin reads it. `GraderLeftovers` finds a container a killed run left, by its label, and `RemoveGrader`
   removes it.
-- Runs checks.
+- Runs checks. A check asked for its typed result (`checks.Spec.Typed`, the loop's ladder) gets
+  `$YGG_CHECK_RESULT` and has its `ygg.check/v1` read back, guarded and bounded; any other command runs alone, with no
+  environment of its own. `ygg-check-result`, in the work image, writes that result from a tool's machine output and
+  keeps it under 768 KiB.
 
 ## Depends on
 

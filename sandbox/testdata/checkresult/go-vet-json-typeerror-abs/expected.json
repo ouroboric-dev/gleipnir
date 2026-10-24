@@ -1,0 +1,12 @@
+{
+  "check": "go-static-vet",
+  "passed": false,
+  "exit_code": 1,
+  "timed_out": false,
+  "duration_ms": 800,
+  "failures": [
+    {"kind": "type", "location": "internal/store/store.go:4:9", "message": "undefined: undefinedThing"},
+    {"kind": "type", "location": "internal/api/server.go:12:5", "message": "cannot use \"five\" (untyped string constant) as int value in return statement"},
+    {"kind": "lint", "location": "internal/web/web.go:9:2", "message": "unusedresult: result of fmt.Sprintf call not used"}
+  ]
+}

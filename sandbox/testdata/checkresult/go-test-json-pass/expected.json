@@ -1,0 +1,19 @@
+{
+  "check": "go-unit",
+  "passed": true,
+  "exit_code": 0,
+  "timed_out": false,
+  "duration_ms": 1234,
+  "counts": {
+    "run": 4,
+    "passed": 3,
+    "failed": 0,
+    "skipped": 1
+  },
+  "failures": [],
+  "passed_tests": [
+    "example.com/app/internal/store.TestSave/new",
+    "example.com/app/internal/store.TestSave",
+    "example.com/app/internal/api.TestHealth"
+  ]
+}

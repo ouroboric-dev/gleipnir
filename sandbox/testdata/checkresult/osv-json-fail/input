@@ -1,0 +1,83 @@
+{
+  "results": [
+    {
+      "source": {
+        "path": "/work/go.mod",
+        "type": "lockfile"
+      },
+      "packages": [
+        {
+          "package": {
+            "name": "golang.org/x/text",
+            "version": "0.3.6",
+            "ecosystem": "Go"
+          },
+          "vulnerabilities": [
+            {
+              "id": "GHSA-ppp9-7jff-5vj2",
+              "summary": "golang.org/x/text/language Denial of service via crafted Accept-Language header",
+              "aliases": [
+                "CVE-2021-38561",
+                "GO-2021-0113"
+              ],
+              "modified": "2023-11-08T04:03:00Z"
+            },
+            {
+              "id": "GO-2021-0113",
+              "summary": "Out-of-bounds read in golang.org/x/text/language",
+              "aliases": [
+                "CVE-2021-38561",
+                "GHSA-ppp9-7jff-5vj2"
+              ],
+              "modified": "2023-11-08T04:03:00Z"
+            }
+          ],
+          "groups": [
+            {
+              "ids": [
+                "CVE-2021-38561",
+                "GHSA-ppp9-7jff-5vj2",
+                "GO-2021-0113"
+              ],
+              "aliases": [
+                "CVE-2021-38561",
+                "GHSA-ppp9-7jff-5vj2",
+                "GO-2021-0113"
+              ],
+              "max_severity": "7.5"
+            }
+          ]
+        },
+        {
+          "package": {
+            "name": "gopkg.in/yaml.v3",
+            "version": "3.0.0",
+            "ecosystem": "Go"
+          },
+          "vulnerabilities": [
+            {
+              "id": "GHSA-hp87-p4gw-j4gq",
+              "summary": "Crash when parsing invalid input in gopkg.in/yaml.v3",
+              "aliases": [
+                "CVE-2022-28948"
+              ],
+              "modified": "2023-02-01T05:05:00Z"
+            }
+          ],
+          "groups": [
+            {
+              "ids": [
+                "GHSA-hp87-p4gw-j4gq",
+                "CVE-2022-28948"
+              ],
+              "aliases": [
+                "CVE-2022-28948"
+              ],
+              "max_severity": "7.5"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

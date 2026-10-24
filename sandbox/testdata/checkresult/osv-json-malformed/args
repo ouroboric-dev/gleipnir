@@ -1,0 +1,10 @@
+--check
+go-security-osv
+--exit
+1
+--duration-ms
+5
+--format
+osv-json
+--input
+input

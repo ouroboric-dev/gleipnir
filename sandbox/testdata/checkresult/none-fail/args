@@ -1,0 +1,16 @@
+--check
+go-policy-pointer
+--exit
+1
+--duration-ms
+4
+--format
+none
+--kind
+policy
+--message
+a file under protected/ changed
+--kind
+policy
+--message
+go.mod names a replace directive

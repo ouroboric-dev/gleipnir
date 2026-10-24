@@ -1,0 +1,10 @@
+--check
+go-security-vuln
+--exit
+3
+--duration-ms
+5
+--format
+govulncheck-json
+--input
+input

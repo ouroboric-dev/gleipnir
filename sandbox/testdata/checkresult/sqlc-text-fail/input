@@ -1,0 +1,4 @@
+# package db
+db/queries/user.sql:12:8: column "emial" does not exist
+db/queries/user.sql:30:1: relation "sessions" does not exist
+error compiling sql: see above

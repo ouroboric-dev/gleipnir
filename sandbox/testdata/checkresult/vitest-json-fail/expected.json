@@ -1,0 +1,26 @@
+{
+  "check": "web-unit",
+  "passed": false,
+  "exit_code": 1,
+  "timed_out": false,
+  "duration_ms": 1900,
+  "counts": {
+    "run": 5,
+    "passed": 3,
+    "failed": 1,
+    "skipped": 1
+  },
+  "failures": [
+    {
+      "kind": "test",
+      "test": "src/a.test.ts > math > subtracts",
+      "location": "src/a.test.ts:4:41",
+      "message": "AssertionError: expected 2 to be 5 // Object.is equality"
+    }
+  ],
+  "passed_tests": [
+    "src/a.test.ts > math > adds",
+    "src/a.test.ts > top level",
+    "src/b.test.ts > works"
+  ]
+}

@@ -1,0 +1,42 @@
+{
+  "check": "go-unit",
+  "passed": false,
+  "exit_code": 1,
+  "timed_out": false,
+  "duration_ms": 2210,
+  "counts": {
+    "run": 5,
+    "passed": 2,
+    "failed": 3,
+    "skipped": 0
+  },
+  "failures": [
+    {
+      "kind": "test",
+      "test": "example.com/app/internal/store.TestSave",
+      "location": "store_test.go:42",
+      "message": "store_test.go:42: got 3 rows, want 4"
+    },
+    {
+      "kind": "test",
+      "test": "example.com/app/internal/api.TestCreate",
+      "location": "api_test.go:88",
+      "message": "api_test.go:88: status = 500, want 201\n    body: {\"error\":\"db\"}"
+    },
+    {
+      "kind": "test",
+      "test": "example.com/app/internal/api.TestList",
+      "location": "api_test.go:120",
+      "message": "api_test.go:120: len(items) = 0, want 2"
+    },
+    {
+      "kind": "build",
+      "location": "internal/auth/token_test.go:17:14",
+      "message": "internal/auth/token_test.go:17:14: undefined: Parse\ninternal/auth/token_test.go:21:9: undefined: Verify"
+    }
+  ],
+  "passed_tests": [
+    "example.com/app/internal/store.TestOther",
+    "example.com/app/internal/api.TestHealth"
+  ]
+}

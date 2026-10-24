@@ -1,0 +1,28 @@
+{"Time":"2026-10-24T10:00:00.000000001Z","Action":"start","Package":"example.com/app/internal/store"}
+{"Time":"2026-10-24T10:00:00.000000002Z","Action":"run","Package":"example.com/app/internal/store","Test":"TestSave"}
+{"Time":"2026-10-24T10:00:00.000000001Z","Action":"output","Package":"example.com/app/internal/store","Test":"TestSave","Output":"=== RUN   TestSave\n"}
+{"Time":"2026-10-24T10:00:00.000000002Z","Action":"run","Package":"example.com/app/internal/store","Test":"TestSave/new"}
+{"Time":"2026-10-24T10:00:00.000000001Z","Action":"output","Package":"example.com/app/internal/store","Test":"TestSave/new","Output":"=== RUN   TestSave/new\n"}
+{"Time":"2026-10-24T10:00:00.000000003Z","Action":"pass","Package":"example.com/app/internal/store","Test":"TestSave/new","Elapsed":0}
+{"Time":"2026-10-24T10:00:00.000000001Z","Action":"output","Package":"example.com/app/internal/store","Test":"TestSave","Output":"--- PASS: TestSave (0.00s)\n"}
+{"Time":"2026-10-24T10:00:00.000000001Z","Action":"output","Package":"example.com/app/internal/store","Test":"TestSave","Output":"    --- PASS: TestSave/new (0.00s)\n"}
+{"Time":"2026-10-24T10:00:00.000000004Z","Action":"pass","Package":"example.com/app/internal/store","Test":"TestSave","Elapsed":0.01}
+{"Time":"2026-10-24T10:00:00.000000005Z","Action":"run","Package":"example.com/app/internal/store","Test":"TestNeedsDB"}
+{"Time":"2026-10-24T10:00:00.000000001Z","Action":"output","Package":"example.com/app/internal/store","Test":"TestNeedsDB","Output":"=== RUN   TestNeedsDB\n"}
+{"Time":"2026-10-24T10:00:00.000000001Z","Action":"output","Package":"example.com/app/internal/store","Test":"TestNeedsDB","Output":"    store_test.go:12: DATABASE_URL is not set\n"}
+{"Time":"2026-10-24T10:00:00.000000001Z","Action":"output","Package":"example.com/app/internal/store","Test":"TestNeedsDB","Output":"--- SKIP: TestNeedsDB (0.00s)\n"}
+{"Time":"2026-10-24T10:00:00.000000006Z","Action":"skip","Package":"example.com/app/internal/store","Test":"TestNeedsDB","Elapsed":0}
+{"Time":"2026-10-24T10:00:00.000000001Z","Action":"output","Package":"example.com/app/internal/store","Output":"PASS\n"}
+{"Time":"2026-10-24T10:00:00.000000001Z","Action":"output","Package":"example.com/app/internal/store","Output":"ok  \texample.com/app/internal/store\t0.012s\n"}
+{"Time":"2026-10-24T10:00:00.000000007Z","Action":"pass","Package":"example.com/app/internal/store","Elapsed":0.012}
+{"Time":"2026-10-24T10:00:00.000000008Z","Action":"start","Package":"example.com/app/internal/api"}
+{"Time":"2026-10-24T10:00:00.000000009Z","Action":"run","Package":"example.com/app/internal/api","Test":"TestHealth"}
+{"Time":"2026-10-24T10:00:00.000000001Z","Action":"output","Package":"example.com/app/internal/api","Test":"TestHealth","Output":"=== RUN   TestHealth\n"}
+{"Time":"2026-10-24T10:00:00.000000001Z","Action":"output","Package":"example.com/app/internal/api","Test":"TestHealth","Output":"--- PASS: TestHealth (0.00s)\n"}
+{"Time":"2026-10-24T10:00:00.000000010Z","Action":"pass","Package":"example.com/app/internal/api","Test":"TestHealth","Elapsed":0}
+{"Time":"2026-10-24T10:00:00.000000001Z","Action":"output","Package":"example.com/app/internal/api","Output":"PASS\n"}
+{"Time":"2026-10-24T10:00:00.000000001Z","Action":"output","Package":"example.com/app/internal/api","Output":"ok  \texample.com/app/internal/api\t0.020s\n"}
+{"Time":"2026-10-24T10:00:00.000000011Z","Action":"pass","Package":"example.com/app/internal/api","Elapsed":0.02}
+{"Time":"2026-10-24T10:00:00.000000012Z","Action":"start","Package":"example.com/app/cmd"}
+{"Time":"2026-10-24T10:00:00.000000001Z","Action":"output","Package":"example.com/app/cmd","Output":"?   \texample.com/app/cmd\t[no test files]\n"}
+{"Time":"2026-10-24T10:00:00.000000013Z","Action":"skip","Package":"example.com/app/cmd","Elapsed":0}

@@ -1,0 +1,12 @@
+{
+  "check": "go-static-vet",
+  "passed": false,
+  "exit_code": 1,
+  "timed_out": false,
+  "duration_ms": 1500,
+  "failures": [
+    {"kind": "lint", "location": "internal/store/store.go:31:2", "message": "printf: fmt.Printf format %d has arg name of wrong type string"},
+    {"kind": "lint", "location": "internal/api/server.go:57:9", "message": "copylocks: return copies lock value: example.com/app/internal/api.Server contains sync.Mutex"},
+    {"kind": "lint", "location": "/elsewhere/gen/x.go:80:3", "message": "unusedresult: result of fmt.Sprintf call not used"}
+  ]
+}

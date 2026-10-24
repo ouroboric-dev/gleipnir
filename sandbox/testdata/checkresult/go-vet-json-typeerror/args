@@ -1,0 +1,14 @@
+--check
+go-static-vet
+--exit
+1
+--duration-ms
+800
+--format
+go-vet-json
+--root
+/work
+--input
+stdout.json
+--input
+stderr.txt

@@ -1,0 +1,8 @@
+--check
+go-policy-pointer
+--exit
+0
+--duration-ms
+3
+--format
+none
