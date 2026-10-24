@@ -1,0 +1,7 @@
+{
+  "name": "ygg-submit-test-deps",
+  "private": true,
+  "dependencies": {
+    "ajv": "8.17.1"
+  }
+}

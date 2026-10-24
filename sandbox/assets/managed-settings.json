@@ -1,6 +1,6 @@
 {
   "allowManagedHooksOnly": true,
   "allowManagedMcpServersOnly": true,
-  "allowedMcpServers": [],
+  "allowedMcpServers": [{ "serverName": "ygg" }],
   "disableBypassPermissionsMode": "disable"
 }

@@ -1,0 +1,40 @@
+{
+  "went_well": [
+    {
+      "category": "navigation",
+      "severity": "low",
+      "text": "The wiring index found the route file at once.",
+      "block": "implement",
+      "evidence": [
+        "task: x"
+      ]
+    }
+  ],
+  "went_wrong": [
+    {
+      "category": "other",
+      "severity": "high",
+      "text": "t002 spent three attempts on a contract it could not see.",
+      "block": "implement",
+      "evidence": [
+        "task:t002",
+        "transcript:client-gallery-lite-t002-implement-1"
+      ]
+    }
+  ],
+  "suggestions": [
+    {
+      "category": "information-access",
+      "severity": "medium",
+      "text": "Put the OpenAPI text in the task input.",
+      "block": "plan",
+      "evidence": [
+        "finding:spec-5",
+        "ledger:182"
+      ]
+    }
+  ],
+  "notes": [
+    "The record had no hidden-suite detail, as designed."
+  ]
+}

@@ -39,10 +39,66 @@ func TestTheFactoryLayerIsPinned(t *testing.T) {
 	if strings.Contains(containerfile, "@latest") || strings.Contains(containerfile, "ANTHROPIC_API_KEY") {
 		t.Error("the Containerfile uses a floating version or names an API key")
 	}
-	var ms map[string]any
-	if err := json.Unmarshal([]byte(ManagedSettings()), &ms); err != nil || ms["allowManagedHooksOnly"] != true || ms["allowManagedMcpServersOnly"] != true || len(ms["allowedMcpServers"].([]any)) != 0 { // with only the first two keys, a project's .mcp.json server still ran (2026-10-16)
-		t.Errorf("managed settings = %v, %v; they must block repo hooks and project MCP servers", ms, err)
+	for _, want := range []string{"ajv@${AJV_VERSION}", "/opt/ygg/lib", "/opt/ygg/bin/ygg-submit", "/opt/ygg/schemas"} {
+		if !strings.Contains(containerfile, want) {
+			t.Errorf("the Containerfile lacks %q", want)
+		}
 	}
+}
+
+func TestTheImageAllowsOnlyOdinsServer(t *testing.T) {
+	var ms struct {
+		HooksOnly   bool `json:"allowManagedHooksOnly"`
+		MCPOnly     bool `json:"allowManagedMcpServersOnly"`
+		Allowed     []map[string]any
+		Bypass      string          `json:"disableBypassPermissionsMode"`
+		AllowedJSON json.RawMessage `json:"allowedMcpServers"`
+	}
+	if err := json.Unmarshal([]byte(ManagedSettings()), &ms); err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(ms.AllowedJSON, &ms.Allowed); err != nil {
+		t.Fatal(err)
+	}
+	// With only the first two keys, a project's .mcp.json server still ran (2026-10-16).
+	if !ms.HooksOnly || !ms.MCPOnly || ms.Bypass != "disable" {
+		t.Errorf("managed settings = %+v; they must block repo hooks and project MCP servers, and bypass mode", ms)
+	}
+	if len(ms.Allowed) != 1 || len(ms.Allowed[0]) != 1 || ms.Allowed[0]["serverName"] != "ygg" {
+		t.Errorf("allowedMcpServers = %v; want exactly [{serverName: ygg}]", ms.Allowed)
+	}
+	var keys map[string]any
+	if err := json.Unmarshal([]byte(ManagedSettings()), &keys); err != nil || len(keys) != 4 {
+		t.Errorf("managed settings hold %v, %v; want the four keys they held, and no other", keys, err)
+	}
+}
+
+func TestTheImageTagFollowsTheSubmitToolAndItsSchemas(t *testing.T) {
+	base := imagesFor(stackImage, submitInputs{script: submitScript, ajv: AjvVersion, schemas: schemaBytes(t)})
+	if base != ImagesFor(stackImage) {
+		t.Fatal("ImagesFor does not hash the embedded script, the ajv pin and the schemas")
+	}
+	for name, in := range map[string]submitInputs{
+		"the script":  {script: submitScript + "\n", ajv: AjvVersion, schemas: schemaBytes(t)},
+		"the ajv pin": {script: submitScript, ajv: AjvVersion + "1", schemas: schemaBytes(t)},
+		"a schema":    {script: submitScript, ajv: AjvVersion, schemas: append(schemaBytes(t), "{}"...)},
+	} {
+		if imagesFor(stackImage, in) == base {
+			t.Errorf("a changed %s kept the image tags", name)
+		}
+	}
+	if imagesFor(stackImage, submitInputs{script: submitScript, ajv: AjvVersion, schemas: schemaBytes(t)}).Firewall != base.Firewall {
+		t.Error("the firewall image should not change with the same inputs")
+	}
+}
+
+func schemaBytes(t *testing.T) []byte {
+	t.Helper()
+	b, err := schemaDigest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return b
 }
 
 func TestBuildPullsWithIsolatedAuthThenBuildsNeverPulling(t *testing.T) {

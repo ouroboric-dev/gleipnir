@@ -6,10 +6,12 @@ import (
 	_ "embed"
 	"encoding/hex"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 
 	"github.com/ouroboric-dev/gungnir"
+	"github.com/ouroboric-dev/gungnir/schema"
 )
 
 //go:embed assets/Containerfile
@@ -29,22 +31,57 @@ const (
 	OpenCode        = "1.18.32"
 	GitleaksVersion = "8.30.1"
 	GitleaksSHA256  = "551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb" // gitleaks_8.30.1_linux_x64.tar.gz
+	AjvVersion      = "8.17.1"                                                           // ygg-submit's validator
 )
 
 // ManagedSettings is the file the work image carries at /etc/claude-code/managed-settings.json: it
-// blocks repository hooks and project MCP servers, whatever flags a session gets (spec §6.2).
+// blocks repository hooks and project MCP servers, whatever flags a session gets (spec §6.2), except
+// ygg-submit's server, named ygg.
 func ManagedSettings() string { return managedSettings }
 
 // ImagesFor returns the tags of the images for a stack layer. The tag is a hash of every input, so
 // a new stack, a new pin or a changed Containerfile is a new image, never a silently changed one.
 func ImagesFor(stack string) Images {
+	digest, err := schemaDigest()
+	if err != nil {
+		panic("the embedded schemas can't be read: " + err.Error()) // an embedded file system failing is a broken build
+	}
+	return imagesFor(stack, submitInputs{script: submitScript, ajv: AjvVersion, schemas: digest})
+}
+
+// submitInputs are what the work image carries for ygg-submit: the script, the pin of its validator and the
+// contracts' schemas (as schemaDigest holds them). A change to any of them is a new image.
+type submitInputs struct {
+	script, ajv string
+	schemas     []byte
+}
+
+func imagesFor(stack string, submit submitInputs) Images {
 	h := sha256.New()
-	for _, part := range []string{containerfile, managedSettings, NodeImage, ClaudeCode, OpenCode, GitleaksVersion, GitleaksSHA256} {
+	for _, part := range []string{containerfile, managedSettings, NodeImage, ClaudeCode, OpenCode, GitleaksVersion, GitleaksSHA256,
+		submit.script, submit.ajv, string(submit.schemas)} {
 		fmt.Fprintf(h, "%d:%s\n", len(part), part)
 	}
 	fw := hex.EncodeToString(h.Sum(nil))[:12]
 	fmt.Fprintf(h, "%d:%s\n", len(stack), stack)
 	return Images{Work: "localhost/ygg-work:" + hex.EncodeToString(h.Sum(nil))[:12], Firewall: "localhost/ygg-fw:" + fw}
+}
+
+// schemaDigest lists every embedded schema, by name and length-prefixed body, in file-system order.
+func schemaDigest() ([]byte, error) {
+	var b []byte
+	err := fs.WalkDir(schema.SchemaFS(), ".", func(p string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return err
+		}
+		body, err := fs.ReadFile(schema.SchemaFS(), p)
+		if err != nil {
+			return err
+		}
+		b = fmt.Appendf(b, "%d:%s\n%d:%s\n", len(p), p, len(body), body)
+		return nil
+	})
+	return b, err
 }
 
 // FactoryStack is the local tag of the stack of a sandbox with no stack: the pinned Node image plus git
@@ -111,10 +148,16 @@ func (d *Driver) build(ctx context.Context, stack string, nodePulled bool) (Imag
 		return Images{}, err
 	}
 	defer os.RemoveAll(ctxDir)
-	for name, body := range map[string]string{"Containerfile": containerfile, "managed-settings.json": managedSettings} {
+	for name, body := range map[string]string{"Containerfile": containerfile, "managed-settings.json": managedSettings, "ygg-submit.mjs": submitScript} {
 		if err := os.WriteFile(filepath.Join(ctxDir, name), []byte(body), 0o644); err != nil {
 			return Images{}, err
 		}
+	}
+	if err := os.Mkdir(filepath.Join(ctxDir, "schemas"), 0o755); err != nil {
+		return Images{}, err
+	}
+	if err := writeSchemas(filepath.Join(ctxDir, "schemas")); err != nil {
+		return Images{}, err
 	}
 	for _, base := range []string{NodeImage, stack} {
 		if base == NodeImage && nodePulled {
@@ -135,7 +178,7 @@ func (d *Driver) build(ctx context.Context, stack string, nodePulled bool) (Imag
 		return []string{"build", "--pull=never", "--target", target, "-t", tag, "-f", filepath.Join(ctxDir, "Containerfile"),
 			"--build-arg", "NODE_IMAGE=" + NodeImage, "--build-arg", "STACK_IMAGE=" + stack,
 			"--build-arg", "CLAUDE_CODE_VERSION=" + ClaudeCode, "--build-arg", "OPENCODE_VERSION=" + OpenCode,
-			"--build-arg", "GITLEAKS_VERSION=" + GitleaksVersion, "--build-arg", "GITLEAKS_SHA256=" + GitleaksSHA256, ctxDir}
+			"--build-arg", "GITLEAKS_VERSION=" + GitleaksVersion, "--build-arg", "GITLEAKS_SHA256=" + GitleaksSHA256, "--build-arg", "AJV_VERSION=" + AjvVersion, ctxDir}
 	}
 	for _, b := range []struct{ target, tag string }{{"fw", imgs.Firewall}, {"work", imgs.Work}} {
 		if _, err := d.run(ctx, d.Podman, args(b.target, b.tag)...); err != nil {

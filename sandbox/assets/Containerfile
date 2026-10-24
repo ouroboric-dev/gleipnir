@@ -1,5 +1,5 @@
 # The factory layer of a leaf's sandbox (spec §6.1). Two targets:
-#   work  the realm's stack image, plus the agent CLIs pinned to exact versions, gitleaks, and
+#   work  the realm's stack image, plus the agent CLIs pinned to exact versions, gitleaks, ygg-submit and
 #         managed settings; it holds no credential and no auto-update.
 #   fw    the firewall sidecar: iptables, dnsmasq (it answers the work container's DNS queries, see egress.sh)
 #         and nothing else of the stack.
@@ -12,6 +12,7 @@ ARG CLAUDE_CODE_VERSION
 ARG OPENCODE_VERSION
 ARG GITLEAKS_VERSION
 ARG GITLEAKS_SHA256
+ARG AJV_VERSION
 RUN npm install -g --prefix /opt/ygg --no-audit --no-fund \
       @anthropic-ai/claude-code@${CLAUDE_CODE_VERSION} opencode-ai@${OPENCODE_VERSION} \
  && npm cache clean --force
@@ -20,6 +21,16 @@ RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certifi
  && echo "${GITLEAKS_SHA256}  /tmp/gitleaks.tgz" | sha256sum -c - \
  && tar -xzf /tmp/gitleaks.tgz -C /opt/ygg/bin gitleaks \
  && cp /usr/local/bin/node /opt/ygg/bin/node
+
+# ygg-submit (the stdio MCP server a session hands its typed output back through) and what it reads: ajv and the
+# contracts' schemas. The script is installed under its .mjs name, with a link for the name an MCP config starts,
+# so node reads it as a module whatever its version's detection of syntax is.
+# Its own prefix: a local install into /opt/ygg/lib would prune the CLIs, which sit in /opt/ygg/lib/node_modules.
+RUN npm install --prefix /opt/ygg/lib/ygg-submit --no-audit --no-fund --no-save ajv@${AJV_VERSION} \
+ && npm cache clean --force
+COPY ygg-submit.mjs /opt/ygg/bin/ygg-submit.mjs
+COPY schemas /opt/ygg/schemas
+RUN chmod 0755 /opt/ygg/bin/ygg-submit.mjs && ln -s ygg-submit.mjs /opt/ygg/bin/ygg-submit
 
 FROM ${NODE_IMAGE} AS fw
 RUN apt-get update && apt-get install -y --no-install-recommends iptables dnsmasq-base \

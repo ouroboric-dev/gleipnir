@@ -32,6 +32,11 @@ The harness: agent adapters, the devcontainer sandbox driver, policies and the c
   workspace (spec §3.3). A sandbox with no stack (a spec with no `Stack`, as a scratch session's) runs on Gleipnir's
   factory stack, the pinned Node image plus git (`FactoryStack`), under the factory layer: `FactoryImages()`,
   which a caller sets as `Config.Images`. `BuildFactory` builds both, pulling the Node image once.
+- Carries `ygg-submit` in the work image: a stdio MCP server (`ygg`, protocol 2025-06-18) through which a session
+  hands back its typed output. Its `submit` tool takes the output or a draft file under `out/` and its `check` tool
+  takes a draft; both validate against the contract in `$YGG_OUTPUT_CONTRACT` with ajv 8.17.1 and the schemas of
+  gungnir's `schema.SchemaFS()`, answer `accepted` or the errors, and write nothing. The managed settings allow
+  exactly that one MCP server, by name. The image tag hashes the script, the ajv pin and every schema.
 - Tears a sandbox down with `Down`: it removes the containers by label, then the compose pod (`pod_` plus the
   project, which compose leaves behind and `podman pod prune` keeps while it is Created; removed without
   force, and no pod is no error), then the networks. `PodLeftovers` lists the factory's pods that hold no

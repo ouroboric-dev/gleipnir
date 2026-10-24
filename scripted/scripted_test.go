@@ -271,12 +271,12 @@ steps:
 	if err != nil {
 		t.Fatal(err)
 	}
-	rep, perr := schema.ParseReport([]byte(r.Output))
+	rep, perr := schema.Decode[schema.Review](schema.ContractReview, []byte(r.Output))
 	if perr != nil || len(rep.Findings) != 2 || rep.Findings[1].Proof == "" || rep.Findings[0].Location != "api/auth.go:42" {
 		t.Errorf("attempt 2: report %+v, %v from %q", rep, perr, r.Output)
 	}
 	r, err = run(t, a, "review", 3)
-	if rep, perr := schema.ParseReport([]byte(r.Output)); err != nil || perr != nil || len(rep.Findings) != 0 {
+	if rep, perr := schema.Decode[schema.Review](schema.ContractReview, []byte(r.Output)); err != nil || perr != nil || len(rep.Findings) != 0 {
 		t.Errorf("attempt 3: an empty report must be a well-formed report with no findings: %q, %v, %v", r.Output, perr, err)
 	}
 }

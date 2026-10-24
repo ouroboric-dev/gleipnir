@@ -1,0 +1,180 @@
+{
+  "run": "20261015-090000-a1b2c3",
+  "status": "finished",
+  "mode": "unattended",
+  "graph": "software",
+  "graph_version": "1.4.0",
+  "factory": [
+    "ygg 0.9.1"
+  ],
+  "config_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+  "brief_sha256": "1111111111111111111111111111111111111111111111111111111111111111",
+  "roles": {
+    "implementer": {
+      "agent": "claude",
+      "model": "opus"
+    },
+    "planner": {
+      "agent": "codex",
+      "model": "gpt"
+    }
+  },
+  "realms": {
+    "midgard-react": "1.0.0"
+  },
+  "time": {
+    "elapsed_ms": 3600000,
+    "active_ms": 3000000,
+    "approval_wait_ms": 500000,
+    "stopped_ms": 100000
+  },
+  "usage": {
+    "in_tokens": 1200,
+    "out_tokens": 300,
+    "cache_read_tokens": 900,
+    "turns": 4,
+    "cost_usd": 0.02,
+    "estimated_usd": 0.01,
+    "billed_usd": 0,
+    "sessions": 2,
+    "unpriced_sessions": 0
+  },
+  "by_role": {
+    "implementer claude opus": {
+      "in_tokens": 1200,
+      "out_tokens": 300,
+      "cache_read_tokens": 900,
+      "turns": 4,
+      "cost_usd": 0.02,
+      "estimated_usd": 0.01,
+      "billed_usd": 0,
+      "sessions": 2,
+      "unpriced_sessions": 0
+    }
+  },
+  "tasks": [
+    {
+      "id": "t001",
+      "title": "Sign up",
+      "leaf": "client",
+      "status": "done",
+      "usage": {
+        "in_tokens": 1,
+        "out_tokens": 2,
+        "cache_read_tokens": 0,
+        "turns": 1,
+        "cost_usd": 0,
+        "estimated_usd": 0,
+        "billed_usd": 0,
+        "sessions": 1,
+        "unpriced_sessions": 0
+      }
+    },
+    {
+      "id": "t002",
+      "title": "Log in",
+      "leaf": "client",
+      "status": "blocked",
+      "why": "no contract",
+      "usage": {
+        "in_tokens": 1,
+        "out_tokens": 2,
+        "cache_read_tokens": 0,
+        "turns": 1,
+        "cost_usd": 0,
+        "estimated_usd": 0,
+        "billed_usd": 0,
+        "sessions": 1,
+        "unpriced_sessions": 0
+      }
+    }
+  ],
+  "leaves": {
+    "client": {
+      "tasks": 2,
+      "done": 1,
+      "blocked": 1,
+      "usage": {
+        "in_tokens": 2,
+        "out_tokens": 4,
+        "cache_read_tokens": 0,
+        "turns": 2,
+        "cost_usd": 0,
+        "estimated_usd": 0,
+        "billed_usd": 0,
+        "sessions": 2,
+        "unpriced_sessions": 0
+      }
+    }
+  },
+  "blocked_tasks": [
+    {
+      "task": "t002",
+      "why": "no contract"
+    }
+  ],
+  "retries": 1,
+  "warnings": [],
+  "loops": {
+    "finished": 2,
+    "passed": 1,
+    "gave_up": 1,
+    "first_pass": {
+      "n": 1,
+      "d": 2
+    },
+    "avg_attempts": 2
+  },
+  "review": {
+    "vetoes": {
+      "n": 1,
+      "d": 3
+    }
+  },
+  "findings": {
+    "raised_by_check": 2,
+    "raised_by_review": 3,
+    "raised_unattributed": 0,
+    "closed": 4,
+    "reopened": 1,
+    "overruled": 0,
+    "disputes_ignored": 0
+  },
+  "interventions": {
+    "rejections": 1,
+    "noted_approvals": 0,
+    "escalations": 1,
+    "items": null
+  },
+  "grade": {
+    "task": "client-gallery-lite",
+    "task_version": "1",
+    "suite": "v0-h20",
+    "reward": 0.5,
+    "fail_to_pass": {
+      "passed": 3,
+      "total": 6
+    },
+    "pass_to_pass": {
+      "passed": 2,
+      "total": 2
+    },
+    "categories": {
+      "auth": {
+        "passed": 1,
+        "total": 2,
+        "weight": 0.5
+      }
+    },
+    "duration_ms": 42000,
+    "escaped_defects": 1,
+    "tasks_given_up": 1
+  },
+  "routing": {
+    "lookups": 0,
+    "indexes": 2,
+    "bench": 0.8,
+    "baseline": 0.5,
+    "threshold": 0.7
+  }
+}
