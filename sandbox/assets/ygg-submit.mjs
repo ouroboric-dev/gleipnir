@@ -105,6 +105,14 @@ function dupIds(list, where, what, tail = '') {
 }
 
 const RULES = {
+  'ygg.check/v1': (d) => {
+    const passed = new Set(d.passed_tests ?? []);
+    const errors = [];
+    (d.failures ?? []).forEach((f, i) => {
+      if (f.test !== undefined && f.test !== '' && passed.has(f.test)) errors.push(`/failures/${i}/test: the test ${f.test} is listed as passed and as failed`);
+    });
+    return errors;
+  },
   'ygg.design/v1': (d) => dupIds(d.open_questions, '/open_questions', 'the open question id'),
   'ygg.review/v1': (d) => dupIds(d.findings, '/findings', 'the finding id'),
   'ygg.implement/v1': (d) => dupIds(d.disputes, '/disputes', 'the finding id', ' in the disputes: a finding is disputed once'),
