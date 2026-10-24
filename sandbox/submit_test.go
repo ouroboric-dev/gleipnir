@@ -303,6 +303,28 @@ func TestSubmitValidatesAgainstTheContract(t *testing.T) {
 	}
 }
 
+// A model may pass output as a JSON string that holds the object (the probe's finding, typed-boundaries R38): the
+// server takes it as that object, and refuses a string that holds anything else, saying what it held.
+func TestSubmitTakesAnOutputGivenAsAJSONString(t *testing.T) {
+	dir := t.TempDir()
+	submit := func(s string) toolResult {
+		return toolOf(t, serve(t, dir, "ygg.review/v1", call(1, "submit", map[string]any{"output": s}))[1])
+	}
+	if r := submit(goodReview); r.IsError || !strings.Contains(r.text(), "accepted") {
+		t.Errorf("a stringified valid review answered %+v", r)
+	}
+	bad := strings.Replace(goodReview, `"location":"api/auth.go:42",`, "", 1)
+	if r := submit(bad); !r.IsError || !strings.Contains(r.text(), "/findings/0") {
+		t.Errorf("a stringified review with no location answered %+v; want the contract errors", r)
+	}
+	for name, s := range map[string]string{"invalid JSON": `{"findings": [`, "an array": `[1, 2]`, "two documents": goodReview + goodReview} {
+		r := submit(s)
+		if !r.IsError || !strings.Contains(r.text(), "output is a string that does not hold one JSON object") {
+			t.Errorf("a string holding %s answered %+v; want a refusal that says so", name, r)
+		}
+	}
+}
+
 func TestSubmitTakesALargeOutput(t *testing.T) {
 	var doc map[string]any
 	if err := json.Unmarshal([]byte(goodReview), &doc); err != nil {

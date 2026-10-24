@@ -225,3 +225,16 @@ func TestTheAdapterSubmits(t *testing.T) {
 func guardedRead(argv []string, p string) bool {
 	return len(argv) == 5 && argv[0] == "sh" && argv[1] == "-c" && strings.Contains(argv[2], "realpath") && argv[3] == "sh" && argv[4] == p
 }
+
+// Claude Code once passed output as a JSON string holding the object (the probe's finding, typed-boundaries R38); the
+// session is then the same as when the model passed the object, and Submitted is the object's bytes.
+func TestAnOutputGivenAsAJSONStringIsTheObjectItHolds(t *testing.T) {
+	r, err := runSession(t, &session{stream: fixture(t, "stream-submit-string.jsonl")}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const want = `{"findings": [{"id": "spec-1", "source": "spec", "severity": "blocker", "location": "api/auth.go:42", "claim": "The signup route has no throttle.", "status": "open"}]}`
+	if string(r.Submitted) != want {
+		t.Errorf("Submitted = %s, want the object the string held", r.Submitted)
+	}
+}

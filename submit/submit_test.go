@@ -159,3 +159,15 @@ func TestTheDraftReadRefusesSymlinksAndFIFOsAndReadsAFile(t *testing.T) {
 		t.Errorf("a path through a symlinked folder was read: %q", doc)
 	}
 }
+
+func TestAnOutputGivenAsAJSONStringIsTheObjectItHolds(t *testing.T) {
+	doc, err := Document(context.Background(), nil, mustJSON(map[string]string{"output": ` {"a": [1, 2]} `}))
+	if err != nil || string(doc) != `{"a": [1, 2]}` {
+		t.Errorf("Document = %q, %v; want the object the string held", doc, err)
+	}
+	for _, s := range []string{`not json`, `[1]`, `null`, `"{}"`, `{} {}`, `{}x`, ``} {
+		if _, err := Document(context.Background(), nil, mustJSON(map[string]string{"output": s})); err == nil {
+			t.Errorf("an output string %q is no one JSON object, and was taken", s)
+		}
+	}
+}

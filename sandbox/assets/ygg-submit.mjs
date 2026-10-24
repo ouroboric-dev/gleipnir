@@ -2,7 +2,7 @@
 // ygg-submit: the stdio MCP server through which a session hands back its typed output (change typed-boundaries,
 // design section 3). The agent CLI starts it as a child process inside the work container, with the agent's own
 // rights and no network. It offers two tools:
-//   submit  {output: object} | {file: string}  checks the output against $YGG_OUTPUT_CONTRACT: "accepted", or the errors
+//   submit  {output: object (or a string holding one)} | {file: string}  checks the output against $YGG_OUTPUT_CONTRACT: "accepted", or the errors
 //   check   {file: string}                     checks a draft under out/ the same way
 // It writes nothing, ever: Odin takes the document from the session's tool call and validates it again, so this
 // tool only helps the model repair in-session and is never trusted. The file form reads a regular file under the
@@ -158,6 +158,18 @@ function parseDocument(text) {
   return doc;
 }
 
+// parseOutputString reads an output given as a string: it must hold exactly one JSON object, and the refusal says what it held.
+function parseOutputString(s) {
+  const shown = s.length > 80 ? `${s.slice(0, 80)}...` : s;
+  let doc;
+  try { doc = JSON.parse(s); } catch (e) { throw new Refusal(`output is a string that does not hold one JSON object: ${e.message} (it starts: ${shown})`); }
+  if (doc === null || typeof doc !== 'object' || Array.isArray(doc)) {
+    const kind = doc === null ? 'null' : Array.isArray(doc) ? 'an array' : typeof doc;
+    throw new Refusal(`output is a string that does not hold one JSON object: it holds ${kind} (it starts: ${shown})`);
+  }
+  return doc;
+}
+
 // readDraft reads a draft under out/ in the session's working directory: no absolute path, no .. segment, no
 // symlink on any segment, a regular file of at most 4 MiB.
 function readDraft(file) {
@@ -218,6 +230,8 @@ async function callTool(name, args) {
     if ('file' in args) doc = parseDocument(readDraft(args.file));
     else {
       doc = args.output;
+      // A model may pass the object as a JSON string (the probe saw Claude Code do it): exactly one JSON object.
+      if (typeof doc === 'string') doc = parseOutputString(doc);
       if (doc === null || typeof doc !== 'object' || Array.isArray(doc)) throw new Refusal('output must be a JSON object');
     }
   }

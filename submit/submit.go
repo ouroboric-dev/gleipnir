@@ -64,7 +64,7 @@ func (t *Tracker) Result(id, text string, isError bool) {
 func (t *Tracker) Last() json.RawMessage { return t.last }
 
 // Document is the output document of an accepted submit whose input was input: the value of its "output", byte for
-// byte as the stream printed it, or the bytes of the draft file it named, read through r. A file is read under the
+// byte as the stream printed it (or, when the output is a string, the one JSON object it holds), or the bytes of the draft file it named, read through r. A file is read under the
 // rules ygg-submit applies (relative, under out/, no .. segment, no NUL) and at most MaxFile bytes of it.
 func Document(ctx context.Context, r gungnir.Runner, input json.RawMessage) ([]byte, error) {
 	var in map[string]json.RawMessage
@@ -77,6 +77,18 @@ func Document(ctx context.Context, r gungnir.Runner, input json.RawMessage) ([]b
 	case hasOut == hasFile || len(in) != 1:
 		return nil, errors.New("the accepted submit's input does not hold exactly one of output and file")
 	case hasOut:
+		// A model may pass the object as a JSON string; the document is then the object the string holds.
+		if s := bytes.TrimSpace(out); len(s) > 0 && s[0] == '"' {
+			var str string
+			if err := json.Unmarshal(s, &str); err != nil {
+				return nil, fmt.Errorf("the accepted submit's output is not a JSON string: %w", err)
+			}
+			out = bytes.TrimSpace([]byte(str))
+			if len(out) == 0 || out[0] != '{' || !json.Valid(out) {
+				return nil, errors.New("the accepted submit's output is a string that does not hold one JSON object")
+			}
+			return out, nil
+		}
 		if doc := bytes.TrimSpace(out); len(doc) == 0 || doc[0] != '{' {
 			return nil, errors.New("the accepted submit's output is not an object")
 		}
