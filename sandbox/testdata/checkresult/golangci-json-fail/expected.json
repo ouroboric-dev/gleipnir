@@ -1,0 +1,24 @@
+{
+  "check": "go-static-lint",
+  "passed": false,
+  "exit_code": 1,
+  "timed_out": false,
+  "duration_ms": 9100,
+  "failures": [
+    {
+      "kind": "lint",
+      "location": "internal/store/store.go:57:11",
+      "message": "errcheck: Error return value of `os.Remove` is not checked"
+    },
+    {
+      "kind": "lint",
+      "location": "cmd/app/main.go:14:2",
+      "message": "staticcheck: SA4006: this value of `err` is never used"
+    },
+    {
+      "kind": "type",
+      "location": "internal/api/server.go:9",
+      "message": "typecheck: undefined: Missing"
+    }
+  ]
+}

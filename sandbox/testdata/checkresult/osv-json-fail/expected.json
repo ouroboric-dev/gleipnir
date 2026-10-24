@@ -1,0 +1,17 @@
+{
+  "check": "go-security-osv",
+  "passed": false,
+  "exit_code": 1,
+  "timed_out": false,
+  "duration_ms": 3300,
+  "failures": [
+    {
+      "kind": "scan",
+      "message": "golang.org/x/text@0.3.6: GHSA-ppp9-7jff-5vj2 golang.org/x/text/language Denial of service via crafted Accept-Language header (also CVE-2021-38561, GO-2021-0113)"
+    },
+    {
+      "kind": "scan",
+      "message": "gopkg.in/yaml.v3@3.0.0: GHSA-hp87-p4gw-j4gq Crash when parsing invalid input in gopkg.in/yaml.v3 (also CVE-2022-28948)"
+    }
+  ]
+}

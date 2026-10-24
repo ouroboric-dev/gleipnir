@@ -1,6 +1,6 @@
 # The factory layer of a leaf's sandbox (spec §6.1). Two targets:
-#   work  the realm's stack image, plus the agent CLIs pinned to exact versions, gitleaks, ygg-submit and
-#         managed settings; it holds no credential and no auto-update.
+#   work  the realm's stack image, plus the agent CLIs pinned to exact versions, gitleaks, ygg-submit,
+#         ygg-check-result and managed settings; it holds no credential and no auto-update.
 #   fw    the firewall sidecar: iptables, dnsmasq (it answers the work container's DNS queries, see egress.sh)
 #         and nothing else of the stack.
 # Built by the driver with isolated registry auth and --pull=never, after it pulled the bases by digest.
@@ -31,6 +31,11 @@ RUN npm ci --prefix /opt/ygg/lib/ygg-submit --no-audit --no-fund \
 COPY ygg-submit.mjs /opt/ygg/bin/ygg-submit.mjs
 COPY schemas /opt/ygg/schemas
 RUN chmod 0755 /opt/ygg/bin/ygg-submit.mjs && ln -s ygg-submit.mjs /opt/ygg/bin/ygg-submit
+
+# ygg-check-result (a check script's converter from its tool's machine output to ygg.check/v1): node's standard
+# library only, installed the same way.
+COPY ygg-check-result.mjs /opt/ygg/bin/ygg-check-result.mjs
+RUN chmod 0755 /opt/ygg/bin/ygg-check-result.mjs && ln -s ygg-check-result.mjs /opt/ygg/bin/ygg-check-result
 
 FROM ${NODE_IMAGE} AS fw
 RUN apt-get update && apt-get install -y --no-install-recommends iptables dnsmasq-base \

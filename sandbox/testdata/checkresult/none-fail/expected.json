@@ -1,0 +1,17 @@
+{
+  "check": "go-policy-pointer",
+  "passed": false,
+  "exit_code": 1,
+  "timed_out": false,
+  "duration_ms": 4,
+  "failures": [
+    {
+      "kind": "policy",
+      "message": "a file under protected/ changed"
+    },
+    {
+      "kind": "policy",
+      "message": "go.mod names a replace directive"
+    }
+  ]
+}

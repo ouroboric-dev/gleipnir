@@ -1,0 +1,8 @@
+{
+  "check": "go-contract-api",
+  "passed": true,
+  "exit_code": 0,
+  "timed_out": false,
+  "duration_ms": 400,
+  "failures": []
+}

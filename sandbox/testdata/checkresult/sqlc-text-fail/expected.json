@@ -1,0 +1,22 @@
+{
+  "check": "go-contract-sqlc",
+  "passed": false,
+  "exit_code": 1,
+  "timed_out": false,
+  "duration_ms": 650,
+  "failures": [
+    {
+      "kind": "build",
+      "location": "db/queries/user.sql:12:8",
+      "message": "column \"emial\" does not exist"
+    },
+    {
+      "kind": "build",
+      "location": "db/queries/user.sql:30:1",
+      "message": "relation \"sessions\" does not exist"
+    }
+  ],
+  "notes": [
+    "1 lines of sqlc output had no file:line:col and are not failures; the log has them."
+  ]
+}

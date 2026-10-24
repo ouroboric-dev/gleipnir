@@ -1,0 +1,10 @@
+--check
+go-contract-api
+--exit
+0
+--duration-ms
+400
+--format
+oasdiff-json
+--input
+input

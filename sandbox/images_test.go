@@ -83,18 +83,19 @@ func TestTheImageAllowsOnlyOdinsServer(t *testing.T) {
 
 func TestTheImageTagFollowsTheSubmitToolAndItsSchemas(t *testing.T) {
 	same := func() submitInputs {
-		return submitInputs{script: submitScript, ajv: AjvVersion, schemas: schemaBytes(t), pkg: submitPackage, lock: submitLock}
+		return submitInputs{checkResult: checkResultScript, script: submitScript, ajv: AjvVersion, schemas: schemaBytes(t), pkg: submitPackage, lock: submitLock}
 	}
 	base := imagesFor(stackImage, same())
 	if base != ImagesFor(stackImage) {
 		t.Fatal("ImagesFor does not hash the embedded script, the ajv pin, the lock file and the schemas")
 	}
 	for name, edit := range map[string]func(*submitInputs){
-		"the script":    func(in *submitInputs) { in.script += "\n" },
-		"the ajv pin":   func(in *submitInputs) { in.ajv += "1" },
-		"a schema":      func(in *submitInputs) { in.schemas = append(in.schemas, "{}"...) },
-		"the lock file": func(in *submitInputs) { in.lock += " " },
-		"package.json":  func(in *submitInputs) { in.pkg += " " },
+		"the script":            func(in *submitInputs) { in.script += "\n" },
+		"the check-result tool": func(in *submitInputs) { in.checkResult += "\n" },
+		"the ajv pin":           func(in *submitInputs) { in.ajv += "1" },
+		"a schema":              func(in *submitInputs) { in.schemas = append(in.schemas, "{}"...) },
+		"the lock file":         func(in *submitInputs) { in.lock += " " },
+		"package.json":          func(in *submitInputs) { in.pkg += " " },
 	} {
 		in := same()
 		edit(&in)

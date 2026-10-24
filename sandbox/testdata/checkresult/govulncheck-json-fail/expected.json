@@ -1,0 +1,17 @@
+{
+  "check": "go-security-vuln",
+  "passed": false,
+  "exit_code": 3,
+  "timed_out": false,
+  "duration_ms": 7100,
+  "failures": [
+    {
+      "kind": "scan",
+      "location": "internal/fetch/fetch.go:24:22",
+      "message": "GO-2025-3503: HTTP Proxy bypass using IPv6 Zone IDs in golang.org/x/net (golang.org/x/net@v0.35.0, golang.org/x/net/http/httpproxy.Config.ProxyFunc, fixed in v0.36.0)"
+    }
+  ],
+  "notes": [
+    "1 vulnerabilities in required modules or packages are not called by the code: GO-2024-2687."
+  ]
+}

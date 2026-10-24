@@ -23,6 +23,12 @@ var EgressScript string
 //go:embed assets/ygg-submit.mjs
 var submitScript string
 
+// checkResultScript is ygg-check-result, which converts a check tool's machine output into a ygg.check/v1 result
+// (change typed-boundaries, design section 4). The work image carries it at /opt/ygg/bin/ygg-check-result.
+//
+//go:embed assets/ygg-check-result.mjs
+var checkResultScript string
+
 // submitPackage and submitLock pin ygg-submit's validator and everything under it. The work image installs
 // them with npm ci, and the tests install the same tree.
 //

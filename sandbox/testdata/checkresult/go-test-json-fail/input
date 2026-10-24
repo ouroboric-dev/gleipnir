@@ -1,0 +1,39 @@
+{"Time":"2026-10-24T10:00:00.000000001Z","Action":"start","Package":"example.com/app/internal/store"}
+{"Time":"2026-10-24T10:00:00.000000002Z","Action":"run","Package":"example.com/app/internal/store","Test":"TestOther"}
+{"Time":"2026-10-24T10:00:00.000000001Z","Action":"output","Package":"example.com/app/internal/store","Test":"TestOther","Output":"=== RUN   TestOther\n"}
+{"Time":"2026-10-24T10:00:00.000000001Z","Action":"output","Package":"example.com/app/internal/store","Test":"TestOther","Output":"--- PASS: TestOther (0.00s)\n"}
+{"Time":"2026-10-24T10:00:00.000000003Z","Action":"pass","Package":"example.com/app/internal/store","Test":"TestOther","Elapsed":0}
+{"Time":"2026-10-24T10:00:00.000000004Z","Action":"run","Package":"example.com/app/internal/store","Test":"TestSave"}
+{"Time":"2026-10-24T10:00:00.000000001Z","Action":"output","Package":"example.com/app/internal/store","Test":"TestSave","Output":"=== RUN   TestSave\n"}
+{"Time":"2026-10-24T10:00:00.000000001Z","Action":"output","Package":"example.com/app/internal/store","Test":"TestSave","Output":"    store_test.go:42: got 3 rows, want 4\n"}
+{"Time":"2026-10-24T10:00:00.000000001Z","Action":"output","Package":"example.com/app/internal/store","Test":"TestSave","Output":"--- FAIL: TestSave (0.01s)\n"}
+{"Time":"2026-10-24T10:00:00.000000005Z","Action":"fail","Package":"example.com/app/internal/store","Test":"TestSave","Elapsed":0.01}
+{"Time":"2026-10-24T10:00:00.000000001Z","Action":"output","Package":"example.com/app/internal/store","Output":"FAIL\n"}
+{"Time":"2026-10-24T10:00:00.000000001Z","Action":"output","Package":"example.com/app/internal/store","Output":"FAIL\texample.com/app/internal/store\t0.015s\n"}
+{"Time":"2026-10-24T10:00:00.000000006Z","Action":"fail","Package":"example.com/app/internal/store","Elapsed":0.015}
+{"Time":"2026-10-24T10:00:00.000000007Z","Action":"start","Package":"example.com/app/internal/api"}
+{"Time":"2026-10-24T10:00:00.000000008Z","Action":"run","Package":"example.com/app/internal/api","Test":"TestHealth"}
+{"Time":"2026-10-24T10:00:00.000000001Z","Action":"output","Package":"example.com/app/internal/api","Test":"TestHealth","Output":"=== RUN   TestHealth\n"}
+{"Time":"2026-10-24T10:00:00.000000001Z","Action":"output","Package":"example.com/app/internal/api","Test":"TestHealth","Output":"--- PASS: TestHealth (0.00s)\n"}
+{"Time":"2026-10-24T10:00:00.000000009Z","Action":"pass","Package":"example.com/app/internal/api","Test":"TestHealth","Elapsed":0}
+{"Time":"2026-10-24T10:00:00.000000010Z","Action":"run","Package":"example.com/app/internal/api","Test":"TestCreate"}
+{"Time":"2026-10-24T10:00:00.000000001Z","Action":"output","Package":"example.com/app/internal/api","Test":"TestCreate","Output":"=== RUN   TestCreate\n"}
+{"Time":"2026-10-24T10:00:00.000000001Z","Action":"output","Package":"example.com/app/internal/api","Test":"TestCreate","Output":"    api_test.go:88: status = 500, want 201\n"}
+{"Time":"2026-10-24T10:00:00.000000001Z","Action":"output","Package":"example.com/app/internal/api","Test":"TestCreate","Output":"        body: {\"error\":\"db\"}\n"}
+{"Time":"2026-10-24T10:00:00.000000001Z","Action":"output","Package":"example.com/app/internal/api","Test":"TestCreate","Output":"--- FAIL: TestCreate (0.03s)\n"}
+{"Time":"2026-10-24T10:00:00.000000011Z","Action":"fail","Package":"example.com/app/internal/api","Test":"TestCreate","Elapsed":0.03}
+{"Time":"2026-10-24T10:00:00.000000012Z","Action":"run","Package":"example.com/app/internal/api","Test":"TestList"}
+{"Time":"2026-10-24T10:00:00.000000001Z","Action":"output","Package":"example.com/app/internal/api","Test":"TestList","Output":"=== RUN   TestList\n"}
+{"Time":"2026-10-24T10:00:00.000000001Z","Action":"output","Package":"example.com/app/internal/api","Test":"TestList","Output":"    api_test.go:120: len(items) = 0, want 2\n"}
+{"Time":"2026-10-24T10:00:00.000000001Z","Action":"output","Package":"example.com/app/internal/api","Test":"TestList","Output":"--- FAIL: TestList (0.00s)\n"}
+{"Time":"2026-10-24T10:00:00.000000013Z","Action":"fail","Package":"example.com/app/internal/api","Test":"TestList","Elapsed":0}
+{"Time":"2026-10-24T10:00:00.000000001Z","Action":"output","Package":"example.com/app/internal/api","Output":"FAIL\n"}
+{"Time":"2026-10-24T10:00:00.000000001Z","Action":"output","Package":"example.com/app/internal/api","Output":"FAIL\texample.com/app/internal/api\t0.040s\n"}
+{"Time":"2026-10-24T10:00:00.000000014Z","Action":"fail","Package":"example.com/app/internal/api","Elapsed":0.04}
+{"ImportPath":"example.com/app/internal/auth [example.com/app/internal/auth.test]","Action":"build-output","Output":"# example.com/app/internal/auth [example.com/app/internal/auth.test]\n"}
+{"ImportPath":"example.com/app/internal/auth [example.com/app/internal/auth.test]","Action":"build-output","Output":"internal/auth/token_test.go:17:14: undefined: Parse\n"}
+{"ImportPath":"example.com/app/internal/auth [example.com/app/internal/auth.test]","Action":"build-output","Output":"internal/auth/token_test.go:21:9: undefined: Verify\n"}
+{"ImportPath":"example.com/app/internal/auth [example.com/app/internal/auth.test]","Action":"build-fail"}
+{"Time":"2026-10-24T10:00:00.000000015Z","Action":"start","Package":"example.com/app/internal/auth"}
+{"Time":"2026-10-24T10:00:00.000000001Z","Action":"output","Package":"example.com/app/internal/auth","Output":"FAIL\texample.com/app/internal/auth [build failed]\n"}
+{"Time":"2026-10-24T10:00:00.000000016Z","Action":"fail","Package":"example.com/app/internal/auth","Elapsed":0,"FailedBuild":"example.com/app/internal/auth [example.com/app/internal/auth.test]"}

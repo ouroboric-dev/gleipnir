@@ -1,0 +1,11 @@
+{
+  "check": "go-security-vuln",
+  "passed": true,
+  "exit_code": 0,
+  "timed_out": false,
+  "duration_ms": 6400,
+  "failures": [],
+  "notes": [
+    "1 vulnerabilities in required modules or packages are not called by the code: GO-2024-2687."
+  ]
+}

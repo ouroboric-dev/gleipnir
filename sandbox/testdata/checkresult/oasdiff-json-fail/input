@@ -1,0 +1,21 @@
+[
+  {
+    "id": "response-required-property-removed",
+    "text": "removed the required property 'name' from the response with the '200' status",
+    "level": 3,
+    "operation": "GET",
+    "operationId": "listPets",
+    "path": "/pets",
+    "source": "openapi.yaml",
+    "section": "paths"
+  },
+  {
+    "id": "api-path-removed-without-deprecation",
+    "text": "api path removed without deprecation",
+    "level": 3,
+    "operation": "DELETE",
+    "path": "/pets/{id}",
+    "source": "openapi.yaml",
+    "section": "paths"
+  }
+]
