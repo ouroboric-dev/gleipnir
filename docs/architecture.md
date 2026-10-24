@@ -19,6 +19,17 @@ The harness: agent adapters, the devcontainer sandbox driver, policies and the c
   deepseek-v4-flash took its prompt for an empty message in that state (v0-H17). Another value is an error from
   `New` and `ConfigJSON`. The `claude-code` and `scripted` adapters ignore the setting. Whether OpenRouter rejects
   `low` or `medium` for a model that does not support them is unverified.
+- Hands a session's typed output back (change typed-boundaries). A task with `Output` set gets one MCP server,
+  `ygg`: Claude Code through `--mcp-config` (with `--strict-mcp-config` kept, so a leaf's `.mcp.json` is never
+  read), opencode through the `mcp` key of its configuration (with project configuration switched off). Both start
+  exactly `/opt/ygg/bin/ygg-submit` with no arguments and the contract in `YGG_OUTPUT_CONTRACT`. Each adapter
+  reads its stream and sets `Result.Submitted` to the output document of the last `submit` call whose tool result
+  was `accepted: the document is a valid <contract>`; a call that named a draft file is read through the sandbox
+  afterwards (`head -c`, at most 4 MiB, under `out/`), and a draft that cannot be read fails the session as an
+  agent failure, with the reason. No accepted call leaves `Submitted` nil. Each adapter implements
+  `gungnir.Submitter`; the scripted one by `submits: true` and a step's `submitted`. The `contract` package holds
+  the suite every adapter passes. If a CLI cannot run the server, its adapter drops the config and Odin reads the
+  strict whole answer.
 - Loads skills explicitly per task, from Havamal at a pinned version (spec §5.1).
 - Runs commands in sandboxes and applies policies: devcontainer hardening, managed settings and
   the egress firewall (spec §6).

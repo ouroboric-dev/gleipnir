@@ -22,6 +22,7 @@ import (
 
 	"github.com/ouroboric-dev/gleipnir/bounded"
 	"github.com/ouroboric-dev/gleipnir/failure"
+	"github.com/ouroboric-dev/gleipnir/submit"
 	"github.com/ouroboric-dev/gungnir"
 )
 
@@ -57,12 +58,38 @@ func (a *Agent) getenv(k string) string {
 	return os.Getenv(k)
 }
 
+// Submits says that the adapter hands a session's typed output back through ygg-submit (gungnir.Submitter).
+func (a *Agent) Submits() bool { return true }
+
+var _ gungnir.Submitter = (*Agent)(nil)
+
+// submitTools are the two tools of ygg-submit, as Claude Code names the tools of an MCP server.
+const submitTools = "mcp__" + submit.Server + "__submit,mcp__" + submit.Server + "__check"
+
+// mcpConfig is the one MCP server of a session that returns contract: ygg-submit by its command, with no
+// arguments, and the contract in its environment. The managed settings allow exactly that command.
+func mcpConfig(contract string) string {
+	b, _ := json.Marshal(map[string]any{"mcpServers": map[string]any{submit.Server: map[string]any{
+		"command": submit.Command, "env": map[string]string{submit.ContractVar: contract}}}})
+	return string(b)
+}
+
 // Args returns the command line of one session, apart from its prompt, which goes on stdin. A
 // read-only role gets read and search tools and nothing else; the others get the file and shell
-// tools, which the sandbox contains.
+// tools, which the sandbox contains. A session that returns a contract (t.Output) also gets the
+// two tools of ygg-submit, from the one server --mcp-config names; --strict-mcp-config stays, so a
+// server in the leaf's own .mcp.json is never read.
 func Args(t gungnir.Task) []string {
 	args := []string{"claude", "-p", "--output-format", "stream-json", "--verbose", "--no-session-persistence",
 		"--setting-sources", "user", "--strict-mcp-config"}
+	tools := "Bash,Edit,Write,Read,Grep,Glob"
+	if t.ReadOnly {
+		tools = "Read,Grep,Glob"
+	}
+	if t.Output != "" {
+		args = append(args, "--mcp-config", mcpConfig(t.Output))
+		tools += "," + submitTools
+	}
 	if t.Model != "" {
 		args = append(args, "--model", t.Model)
 	}
@@ -70,10 +97,9 @@ func Args(t gungnir.Task) []string {
 		args = append(args, "--max-turns", strconv.Itoa(t.MaxTurns))
 	}
 	if t.ReadOnly {
-		return append(args, "--tools", "Read,Grep,Glob", "--allowedTools", "Read,Grep,Glob", "--permission-mode", "dontAsk")
+		return append(args, "--tools", tools, "--allowedTools", tools, "--permission-mode", "dontAsk")
 	}
-	return append(args, "--tools", "Bash,Edit,Write,Read,Grep,Glob", "--allowedTools", "Bash,Edit,Write,Read,Grep,Glob",
-		"--permission-mode", "acceptEdits")
+	return append(args, "--tools", tools, "--allowedTools", tools, "--permission-mode", "acceptEdits")
 }
 
 // Run runs one session in the task's sandbox and reports how it ended and what it used.
@@ -146,7 +172,83 @@ func (a *Agent) Run(ctx context.Context, t gungnir.Task) (gungnir.Result, error)
 	}
 	r.TranscriptPath = transcriptPath(t)
 	r.Provider = "anthropic"
+	if t.Output != "" {
+		// A read failure is an error, not a nil Submitted: Result has no field to say why, and Odin would repair
+		// blind. The session's usage goes with it.
+		if r.Submitted, err = lastSubmit(ctx, t, out.Bytes()); err != nil {
+			return gungnir.Result{}, &gungnir.SessionError{Kind: gungnir.FailureAgent, Usage: r.Usage, Err: fmt.Errorf("claude-code: %w", err)}
+		}
+	}
 	return r, nil
+}
+
+// lastSubmit is the output document of the last submit call of the stream that its tool result accepted, or nil.
+// A call is an assistant message's tool_use block; its result is a tool_result block of a later user message,
+// with the same id. A stream that held no such pair, or only refused calls, gives nil.
+func lastSubmit(ctx context.Context, t gungnir.Task, stream []byte) ([]byte, error) {
+	tr := submit.NewTracker(t.Output)
+	sc := bufio.NewScanner(bytes.NewReader(stream))
+	sc.Buffer(make([]byte, 1<<20), 64<<20)
+	for sc.Scan() {
+		line := bytes.TrimSpace(sc.Bytes())
+		if len(line) == 0 || line[0] != '{' || !bytes.Contains(line, []byte("submit")) && !bytes.Contains(line, []byte(`"tool_result"`)) {
+			continue
+		}
+		var e struct {
+			Message struct {
+				Content []struct {
+					Type      string          `json:"type"`
+					ID        string          `json:"id"`
+					Name      string          `json:"name"`
+					Input     json.RawMessage `json:"input"`
+					ToolUseID string          `json:"tool_use_id"`
+					Content   json.RawMessage `json:"content"`
+					IsError   bool            `json:"is_error"`
+				} `json:"content"`
+			} `json:"message"`
+		}
+		if json.Unmarshal(line, &e) != nil {
+			continue
+		}
+		for _, b := range e.Message.Content {
+			switch {
+			case b.Type == "tool_use" && b.Name == "mcp__"+submit.Server+"__submit":
+				tr.Call(b.ID, b.Input)
+			case b.Type == "tool_result":
+				tr.Result(b.ToolUseID, resultText(b.Content), b.IsError)
+			}
+		}
+	}
+	if err := sc.Err(); err != nil {
+		return nil, err
+	}
+	input := tr.Last()
+	if input == nil {
+		return nil, nil
+	}
+	return submit.Document(ctx, t.Sandbox, input)
+}
+
+// resultText is the text of a tool result's content, which is a string or a list of blocks.
+func resultText(c json.RawMessage) string {
+	var s string
+	if json.Unmarshal(c, &s) == nil {
+		return s
+	}
+	var blocks []struct {
+		Type string `json:"type"`
+		Text string `json:"text"`
+	}
+	if json.Unmarshal(c, &blocks) != nil {
+		return ""
+	}
+	var parts []string
+	for _, b := range blocks {
+		if b.Type == "text" {
+			parts = append(parts, b.Text)
+		}
+	}
+	return strings.Join(parts, "\n")
 }
 
 // unfinished says how a session failed that ended without a usable result. A tool that crashed before

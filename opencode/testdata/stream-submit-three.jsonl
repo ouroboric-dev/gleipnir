@@ -1,0 +1,12 @@
+{"type":"step_start","timestamp":1,"sessionID":"ses_1","part":{"id":"p","type":"step-start"}}
+{"type":"tool_use","timestamp":1,"sessionID":"ses_1","part":{"id":"p","type":"tool","callID":"c1","tool":"ygg_submit","state":{"status":"completed","input":{"output":{"findings":"none"}},"output":"ygg.review/v1: the document breaks its contract.\\n/findings: must be array","metadata":{},"time":{"start":1,"end":2}}}}
+{"type":"step_finish","timestamp":2,"sessionID":"ses_1","part":{"id":"p","reason":"tool-calls","type":"step-finish","tokens":{"total":92,"input":7,"output":5,"reasoning":0,"cache":{"write":0,"read":80}},"cost":0.00001005}}
+{"type":"step_start","timestamp":1,"sessionID":"ses_1","part":{"id":"p","type":"step-start"}}
+{"type":"tool_use","timestamp":1,"sessionID":"ses_1","part":{"id":"p","type":"tool","callID":"c2","tool":"ygg_submit","state":{"status":"completed","input":{"output":{"findings":[{"id":"spec-1","source":"spec","severity":"blocker","location":"api/auth.go:42","claim":"The signup route has no throttle.","status":"open"}]}},"output":"accepted: the document is a valid ygg.review/v1","metadata":{},"time":{"start":1,"end":2}}}}
+{"type":"step_finish","timestamp":2,"sessionID":"ses_1","part":{"id":"p","reason":"tool-calls","type":"step-finish","tokens":{"total":92,"input":7,"output":5,"reasoning":0,"cache":{"write":0,"read":80}},"cost":0.00001005}}
+{"type":"step_start","timestamp":1,"sessionID":"ses_1","part":{"id":"p","type":"step-start"}}
+{"type":"tool_use","timestamp":1,"sessionID":"ses_1","part":{"id":"p","type":"tool","callID":"c3","tool":"ygg_submit","state":{"status":"completed","input":{"output":{"findings":[],"notes":["looked twice"]}},"output":"accepted: the document is a valid ygg.review/v1","metadata":{},"time":{"start":1,"end":2}}}}
+{"type":"step_finish","timestamp":2,"sessionID":"ses_1","part":{"id":"p","reason":"tool-calls","type":"step-finish","tokens":{"total":92,"input":7,"output":5,"reasoning":0,"cache":{"write":0,"read":80}},"cost":0.00001005}}
+{"type":"step_start","timestamp":1,"sessionID":"ses_1","part":{"id":"p","type":"step-start"}}
+{"type":"text","timestamp":1,"sessionID":"ses_1","part":{"id":"p","type":"text","text":"Done."}}
+{"type":"step_finish","timestamp":2,"sessionID":"ses_1","part":{"id":"p","reason":"stop","type":"step-finish","tokens":{"total":92,"input":7,"output":5,"reasoning":0,"cache":{"write":0,"read":80}},"cost":0.00001005}}
