@@ -279,11 +279,6 @@ func TestATimedOutRunMayEndInHalfALine(t *testing.T) {
 	if r.Passed || !r.TimedOut || len(r.Notes) == 0 {
 		t.Errorf("got %+v; want a failed, timed out result with a note on the cut line", r)
 	}
-	// Without the timeout the same cut line is malformed.
-	_, code, _ = convert(t, tool, dir, []string{"--check", "unit", "--exit", "1", "--duration-ms", "9", "--format", "go-test-json", "--input", "in"})
-	if code != 2 {
-		t.Errorf("exit %d; want 2", code)
-	}
 }
 
 func TestTheCountsAndTheBoundsHold(t *testing.T) {
@@ -304,3 +299,42 @@ func TestTheCountsAndTheBoundsHold(t *testing.T) {
 }
 
 func itoa(i int) string { b, _ := json.Marshal(i); return string(b) }
+
+func TestAPackageThatDiesInsideATestNamesIt(t *testing.T) {
+	tool := checkResultTool(t)
+	// Nothing else failed: the package failure carries the unfinished test's output too, and the test has its own failure.
+	in := `{"Action":"run","Package":"q","Test":"TestC"}
+{"Action":"output","Package":"q","Test":"TestC","Output":"panic: test timed out after 1s\n"}
+{"Action":"output","Package":"q","Output":"FAIL\tq\t1.004s\n"}
+{"Action":"fail","Package":"q"}
+`
+	dir := fixture(t, map[string]string{"in": in})
+	got, code, stderr := convert(t, tool, dir, []string{"--check", "unit", "--exit", "1", "--duration-ms", "1", "--format", "go-test-json", "--input", "in"})
+	if code != 0 {
+		t.Fatalf("exit %d: %s", code, stderr)
+	}
+	r := decodeResult(t, got)
+	if len(r.Failures) != 2 || r.Failures[0].Test != "q.TestC" || r.Failures[1].Test != "" || !strings.Contains(r.Failures[1].Message, "panic: test timed out") {
+		t.Errorf("got %+v", r.Failures)
+	}
+}
+
+func TestTheNoticesOfTheJSONToolsAreRead(t *testing.T) {
+	tool := checkResultTool(t)
+	run := func(format, in string) schema.CheckResult {
+		dir := fixture(t, map[string]string{"in": in})
+		got, code, stderr := convert(t, tool, dir, []string{"--check", "c", "--exit", "0", "--duration-ms", "1", "--format", format, "--input", "in"})
+		if code != 0 {
+			t.Fatalf("%s: exit %d: %s", format, code, stderr)
+		}
+		return decodeResult(t, got)
+	}
+	if r := run("osv-json", `{"results": null}`); !r.Passed || len(r.Failures) != 0 {
+		t.Errorf("results null: %+v", r)
+	}
+	// A typecheck issue's Pos is a placeholder; with no position in its Text, it has no location.
+	r := run("golangci-json", `{"Issues":[{"FromLinter":"typecheck","Text":"could not import x","Pos":{"Filename":"","Line":1,"Column":0}}]}`)
+	if len(r.Failures) != 1 || r.Failures[0].Location != "" || r.Failures[0].Kind != "type" {
+		t.Errorf("got %+v", r.Failures)
+	}
+}

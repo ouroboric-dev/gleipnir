@@ -30,7 +30,7 @@
     },
     {
       "FromLinter": "typecheck",
-      "Text": "undefined: Missing",
+      "Text": ": # example.com/app/internal/api\ninternal/api/server.go:9:2: undefined: Missing",
       "Severity": "",
       "SourceLines": [
         "\tMissing()"
@@ -38,7 +38,7 @@
       "Pos": {
         "Filename": "internal/api/server.go",
         "Offset": 90,
-        "Line": 9,
+        "Line": 1,
         "Column": 0
       }
     }

@@ -1,0 +1,47 @@
+{"Time":"2026-10-24T20:36:37.032111609+02:00","Action":"start","Package":"q"}
+{"Time":"2026-10-24T20:36:37.034075894+02:00","Action":"run","Package":"q","Test":"TestA"}
+{"Time":"2026-10-24T20:36:37.034090942+02:00","Action":"output","Package":"q","Test":"TestA","Output":"=== RUN   TestA\n"}
+{"Time":"2026-10-24T20:36:37.034106872+02:00","Action":"output","Package":"q","Test":"TestA","Output":"--- PASS: TestA (0.00s)\n"}
+{"Time":"2026-10-24T20:36:37.034111641+02:00","Action":"pass","Package":"q","Test":"TestA","Elapsed":0}
+{"Time":"2026-10-24T20:36:37.034115178+02:00","Action":"run","Package":"q","Test":"TestB"}
+{"Time":"2026-10-24T20:36:37.034117082+02:00","Action":"output","Package":"q","Test":"TestB","Output":"=== RUN   TestB\n"}
+{"Time":"2026-10-24T20:36:37.034118935+02:00","Action":"output","Package":"q","Test":"TestB","Output":"    q_test.go:10: b broke\n"}
+{"Time":"2026-10-24T20:36:37.03412118+02:00","Action":"output","Package":"q","Test":"TestB","Output":"--- FAIL: TestB (0.00s)\n"}
+{"Time":"2026-10-24T20:36:37.034123153+02:00","Action":"fail","Package":"q","Test":"TestB","Elapsed":0}
+{"Time":"2026-10-24T20:36:37.034125007+02:00","Action":"run","Package":"q","Test":"TestC"}
+{"Time":"2026-10-24T20:36:37.03412669+02:00","Action":"output","Package":"q","Test":"TestC","Output":"=== RUN   TestC\n"}
+{"Time":"2026-10-24T20:36:38.036334879+02:00","Action":"output","Package":"q","Test":"TestC","Output":"panic: test timed out after 1s\n"}
+{"Time":"2026-10-24T20:36:38.036375175+02:00","Action":"output","Package":"q","Test":"TestC","Output":"\trunning tests:\n"}
+{"Time":"2026-10-24T20:36:38.03638834+02:00","Action":"output","Package":"q","Test":"TestC","Output":"\t\tTestC (1s)\n"}
+{"Time":"2026-10-24T20:36:38.036392638+02:00","Action":"output","Package":"q","Test":"TestC","Output":"\n"}
+{"Time":"2026-10-24T20:36:38.036395965+02:00","Action":"output","Package":"q","Test":"TestC","Output":"goroutine 9 [running]:\n"}
+{"Time":"2026-10-24T20:36:38.036397959+02:00","Action":"output","Package":"q","Test":"TestC","Output":"testing.(*M).startAlarm.func1()\n"}
+{"Time":"2026-10-24T20:36:38.036399902+02:00","Action":"output","Package":"q","Test":"TestC","Output":"\t/usr/local/go/libexec/src/testing/testing.go:2802 +0x354\n"}
+{"Time":"2026-10-24T20:36:38.036403469+02:00","Action":"output","Package":"q","Test":"TestC","Output":"created by time.goFunc\n"}
+{"Time":"2026-10-24T20:36:38.036405403+02:00","Action":"output","Package":"q","Test":"TestC","Output":"\t/usr/local/go/libexec/src/time/sleep.go:215 +0x2d\n"}
+{"Time":"2026-10-24T20:36:38.036407196+02:00","Action":"output","Package":"q","Test":"TestC","Output":"\n"}
+{"Time":"2026-10-24T20:36:38.03640925+02:00","Action":"output","Package":"q","Test":"TestC","Output":"goroutine 1 [chan receive]:\n"}
+{"Time":"2026-10-24T20:36:38.036413879+02:00","Action":"output","Package":"q","Test":"TestC","Output":"testing.(*T).Run(0x158ebdb0a008, {0x584fc0?, 0x0?}, 0x592e20)\n"}
+{"Time":"2026-10-24T20:36:38.036416854+02:00","Action":"output","Package":"q","Test":"TestC","Output":"\t/usr/local/go/libexec/src/testing/testing.go:2109 +0x4e5\n"}
+{"Time":"2026-10-24T20:36:38.036418758+02:00","Action":"output","Package":"q","Test":"TestC","Output":"testing.runTests.func1(0x158ebdb0a008)\n"}
+{"Time":"2026-10-24T20:36:38.036421062+02:00","Action":"output","Package":"q","Test":"TestC","Output":"\t/usr/local/go/libexec/src/testing/testing.go:2585 +0x3e\n"}
+{"Time":"2026-10-24T20:36:38.036422896+02:00","Action":"output","Package":"q","Test":"TestC","Output":"testing.tRunner(0x158ebdb0a008, 0x158ebda58c58)\n"}
+{"Time":"2026-10-24T20:36:38.036424769+02:00","Action":"output","Package":"q","Test":"TestC","Output":"\t/usr/local/go/libexec/src/testing/testing.go:2036 +0xea\n"}
+{"Time":"2026-10-24T20:36:38.036426653+02:00","Action":"output","Package":"q","Test":"TestC","Output":"testing.runTests({0x584c70, 0x1}, {0x584c70, 0x1}, 0x158ebd9d0120, {0x6d30a0, 0x3, 0x3}, {0xc2af5c8d8205f9c0, 0x3b9e2477, ...})\n"}
+{"Time":"2026-10-24T20:36:38.036429298+02:00","Action":"output","Package":"q","Test":"TestC","Output":"\t/usr/local/go/libexec/src/testing/testing.go:2583 +0x505\n"}
+{"Time":"2026-10-24T20:36:38.036439006+02:00","Action":"output","Package":"q","Test":"TestC","Output":"testing.(*M).Run(0x158ebda5c280)\n"}
+{"Time":"2026-10-24T20:36:38.03644099+02:00","Action":"output","Package":"q","Test":"TestC","Output":"\t/usr/local/go/libexec/src/testing/testing.go:2443 +0x6ac\n"}
+{"Time":"2026-10-24T20:36:38.036442874+02:00","Action":"output","Package":"q","Test":"TestC","Output":"main.main()\n"}
+{"Time":"2026-10-24T20:36:38.036446901+02:00","Action":"output","Package":"q","Test":"TestC","Output":"\t_testmain.go:50 +0x9b\n"}
+{"Time":"2026-10-24T20:36:38.036448745+02:00","Action":"output","Package":"q","Test":"TestC","Output":"\n"}
+{"Time":"2026-10-24T20:36:38.036450658+02:00","Action":"output","Package":"q","Test":"TestC","Output":"goroutine 8 [sleep]:\n"}
+{"Time":"2026-10-24T20:36:38.036452402+02:00","Action":"output","Package":"q","Test":"TestC","Output":"time.Sleep(0x12a05f200)\n"}
+{"Time":"2026-10-24T20:36:38.036454125+02:00","Action":"output","Package":"q","Test":"TestC","Output":"\t/usr/local/go/libexec/src/runtime/time.go:363 +0x165\n"}
+{"Time":"2026-10-24T20:36:38.036455908+02:00","Action":"output","Package":"q","Test":"TestC","Output":"q.TestC(0x158ebdb0a6c8?)\n"}
+{"Time":"2026-10-24T20:36:38.036457652+02:00","Action":"output","Package":"q","Test":"TestC","Output":"\t/work/q/q_test.go:12 +0x1d\n"}
+{"Time":"2026-10-24T20:36:38.036459515+02:00","Action":"output","Package":"q","Test":"TestC","Output":"testing.tRunner(0x158ebdb0a6c8, 0x592e20)\n"}
+{"Time":"2026-10-24T20:36:38.036462651+02:00","Action":"output","Package":"q","Test":"TestC","Output":"\t/usr/local/go/libexec/src/testing/testing.go:2036 +0xea\n"}
+{"Time":"2026-10-24T20:36:38.036464515+02:00","Action":"output","Package":"q","Test":"TestC","Output":"created by testing.(*T).Run in goroutine 1\n"}
+{"Time":"2026-10-24T20:36:38.036466308+02:00","Action":"output","Package":"q","Test":"TestC","Output":"\t/usr/local/go/libexec/src/testing/testing.go:2101 +0x4c5\n"}
+{"Time":"2026-10-24T20:36:38.03691877+02:00","Action":"output","Package":"q","Output":"FAIL\tq\t1.004s\n"}
+{"Time":"2026-10-24T20:36:38.036931414+02:00","Action":"fail","Package":"q","Elapsed":1.005}

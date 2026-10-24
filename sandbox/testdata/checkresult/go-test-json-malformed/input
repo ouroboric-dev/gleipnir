@@ -1,2 +1,2 @@
-{"Action":"run","Package":"p","Test":"TestA"}
---- FAIL: TestA (0.00s)
+this is not json
+neither is this

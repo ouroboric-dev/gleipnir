@@ -1,0 +1,29 @@
+{
+  "check": "go-unit",
+  "passed": false,
+  "exit_code": 1,
+  "timed_out": false,
+  "duration_ms": 1010,
+  "counts": {
+    "run": 3,
+    "passed": 1,
+    "failed": 2,
+    "skipped": 0
+  },
+  "failures": [
+    {
+      "kind": "test",
+      "test": "q.TestB",
+      "location": "q_test.go:10",
+      "message": "q_test.go:10: b broke"
+    },
+    {
+      "kind": "test",
+      "test": "q.TestC",
+      "message": "panic: test timed out after 1s\n\trunning tests:\n\t\tTestC (1s)\n\ngoroutine 9 [running]:\ntesting.(*M).startAlarm.func1()\n\t/usr/local/go/libexec/src/testing/testing.go:2802 +0x354\ncreated by time.goFunc\n\t/usr/local/go/libexec/src/time/sleep.go:215 +0x2d\n\ngoroutine 1 [chan receive]:\ntesting.(*T).Run(0x158ebdb0a008, {0x584fc0?, 0x0?}, 0x592e20)\n\t/usr/local/go/libexec/src/testing/testing.go:2109 +0x4e5\ntesting.runTests.func1(0x158ebdb0a008)\n\t/usr/local/go/libexec/src/testing/testing.go:2585 +0x3e\ntesting.tRunner(0x158ebdb0a008, 0x158ebda58c58)\n\t/usr/local/go/libexec/src/testing/testing.go:2036 +0xea\ntesting.runTests({0x584c70, 0x1}, {0x584c70, 0x1}, 0x158ebd9d0120, {0x6d30a0, 0x3, 0x3}, {0xc2af5c8d8205f9c0, 0x3b9e2477, ...})\n\t/usr/local/go/libexec/src/testing/testing.go:2583 +0x505\ntesting.(*M).Run(0x158ebda5c280)\n\t/usr/local/go/libexec/src/testing/testing.go:2443 +0x6ac\nmain.main()\n\t_testmain.go:50 +0x9b\n\ngoroutine 8 [sleep]:\ntime.Sleep(0x12a05f200)\n\t/usr/local/go/libexec/src/runtime/time.go:363 +0x165\nq.TestC(0x158ebdb0a6c8?)\n\t/work/q/q_test.go:12 +0x1d\ntesting.tRunner(0x158ebdb0a6c8, 0x592e20)\n\t/usr/local/go/libexec/src/testing/testing.go:2036 +0xea\ncreated by testing.(*T).Run in goroutine 1\n\t/usr/local/go/libexec/src/testing/testing.go:2101 +0x4c5"
+    }
+  ],
+  "passed_tests": [
+    "q.TestA"
+  ]
+}

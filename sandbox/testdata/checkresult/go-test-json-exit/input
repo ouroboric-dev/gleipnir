@@ -1,0 +1,11 @@
+{"Time":"2026-10-24T20:36:38.226761224+02:00","Action":"start","Package":"x"}
+{"Time":"2026-10-24T20:36:38.228968926+02:00","Action":"run","Package":"x","Test":"TestA"}
+{"Time":"2026-10-24T20:36:38.228982361+02:00","Action":"output","Package":"x","Test":"TestA","Output":"=== RUN   TestA\n"}
+{"Time":"2026-10-24T20:36:38.228998772+02:00","Action":"output","Package":"x","Test":"TestA","Output":"    x_test.go:8: a broke\n"}
+{"Time":"2026-10-24T20:36:38.229005615+02:00","Action":"output","Package":"x","Test":"TestA","Output":"--- FAIL: TestA (0.00s)\n"}
+{"Time":"2026-10-24T20:36:38.229010484+02:00","Action":"fail","Package":"x","Test":"TestA","Elapsed":0}
+{"Time":"2026-10-24T20:36:38.229014923+02:00","Action":"run","Package":"x","Test":"TestB"}
+{"Time":"2026-10-24T20:36:38.229016796+02:00","Action":"output","Package":"x","Test":"TestB","Output":"=== RUN   TestB\n"}
+{"Time":"2026-10-24T20:36:38.229052674+02:00","Action":"output","Package":"x","Test":"TestB","Output":"    x_test.go:11: about to exit\n"}
+{"Time":"2026-10-24T20:36:38.229346686+02:00","Action":"output","Package":"x","Output":"FAIL\tx\t0.002s\n"}
+{"Time":"2026-10-24T20:36:38.229358278+02:00","Action":"fail","Package":"x","Elapsed":0.003}

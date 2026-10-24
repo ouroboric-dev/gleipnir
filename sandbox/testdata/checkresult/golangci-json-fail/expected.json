@@ -17,8 +17,8 @@
     },
     {
       "kind": "type",
-      "location": "internal/api/server.go:9",
-      "message": "typecheck: undefined: Missing"
+      "location": "internal/api/server.go:9:2",
+      "message": "typecheck: : # example.com/app/internal/api\ninternal/api/server.go:9:2: undefined: Missing"
     }
   ]
 }

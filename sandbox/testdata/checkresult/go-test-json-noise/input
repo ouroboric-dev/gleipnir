@@ -1,0 +1,5 @@
+warning: some GOFLAGS noise
+{"Action":"run","Package":"p","Test":"TestA"}
+{"Action":"pass","Package":"p","Test":"TestA"}
+ok  	p	0.01s
+{"Action":"pass","Package":"p"}

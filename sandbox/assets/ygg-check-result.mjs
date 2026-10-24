@@ -112,21 +112,27 @@ function goTestJSON(inputs, ctx) {
   const passed = new Set();
   const pkg = (p) => { if (!pkgs.has(p)) pkgs.set(p, { out: [], tests: 0 }); return pkgs.get(p); };
   const key = (p, t) => `${p}\0${t}`;
-  const lines = [];
-  for (const { name, text } of inputs) text.split('\n').forEach((l, i) => { if (l.trim()) lines.push({ name, n: i + 1, l }); });
-  lines.forEach(({ name, n, l }, idx) => {
-    let ev;
-    try {
-      ev = JSON.parse(l);
-      need(isObj(ev), 'not an object');
-    } catch (e) {
-      // A run killed at its time limit may end in half a line; nothing else may.
-      if (ctx.timedOut && idx === lines.length - 1) {
-        notes.push(`The last line of ${name} was cut by the time limit and is ignored.`);
-        return;
+  // Lines that are not events (a stray warning, a cut line) are skipped and counted, provided at least one line is an
+  // event; a stream with none is not go test -json output at all.
+  const events = [];
+  let skipped = 0, firstBad;
+  for (const { name, text } of inputs) {
+    const ls = text.split('\n');
+    ls.forEach((l, i) => {
+      if (!l.trim()) return;
+      try {
+        const ev = JSON.parse(l);
+        need(isObj(ev), 'not an object');
+        events.push(ev);
+      } catch (e) {
+        skipped++;
+        firstBad ??= `${name}: line ${i + 1} is not a go test -json event (${e.message})`;
       }
-      throw new Refuse(`${name}: line ${n} is not a go test -json event (${e.message})`);
-    }
+    });
+  }
+  if (events.length === 0 && skipped > 0) throw new Refuse(firstBad);
+  if (skipped > 0) notes.push(`skipped ${skipped} lines that are not JSON`);
+  events.forEach((ev) => {
     const act = ev.Action;
     if (act === 'build-output') {
       if (typeof ev.ImportPath === 'string') (builds.get(ev.ImportPath) ?? builds.set(ev.ImportPath, []).get(ev.ImportPath)).push(String(ev.Output ?? ''));
@@ -166,13 +172,29 @@ function goTestJSON(inputs, ctx) {
     if (act === 'output') p.out.push(String(ev.Output ?? ''));
     else if (act === 'fail') {
       const outText = p.out.join('');
+      // A test that began and never ended (a timeout panic, os.Exit, log.Fatal) has no result of its own; the package's
+      // failure is the only sign, so each is a failure of its own, with the output it printed.
+      const hadTests = p.tests;
+      const unfinished = [...tests.values()].filter((t) => t.pkg === ev.Package && t.result === undefined);
+      for (const t of unfinished) {
+        const id = testId(t.pkg, t.name);
+        if (id) { if (failed.has(id)) continue; failed.add(id); }
+        p.tests++;
+        t.result = 'fail';
+        const raw = t.out.join('').split('\n');
+        const loc = raw.map((r) => r.match(/^\s*([^\s:]+\.go):(\d+)(?::(\d+))?:/)).find(Boolean);
+        const msg = textOf(raw.filter((r) => !/^\s*=== (RUN|PAUSE|CONT|NAME)\b/.test(r))) || 'did not finish';
+        failures.push(failure('test', id ? msg : `${t.pkg}.${t.name}: ${msg}`, { test: id, loc: loc && location(loc[1], +loc[2], +loc[3]) }));
+      }
       const broken = typeof ev.FailedBuild === 'string' && ev.FailedBuild;
       if (broken || /\[build failed\]/.test(outText)) {
         const src = broken ? (builds.get(ev.FailedBuild) ?? []).join('').split('\n').filter((r) => !r.startsWith('#')) : outText.split('\n').filter((r) => !/^FAIL\t/.test(r));
         const first = src.map((r) => r.match(/^\s*(\S+\.go):(\d+):(\d+):/)).find(Boolean);
         failures.push(failure('build', textOf(src) || `${ev.Package} failed to build`, { loc: first && location(first[1], +first[2], +first[3]) }));
-      } else if (p.tests === 0) {
-        failures.push(failure('test', textOf(outText.split('\n')) || `${ev.Package} failed with no output`));
+      } else if (hadTests === 0) {
+        // Nothing failed on its own account: the package's output, and what the unfinished tests printed.
+        const more = unfinished.flatMap((t) => t.out.join('').split('\n'));
+        failures.push(failure('test', textOf([...outText.split('\n'), ...more]) || `${ev.Package} failed with no output`));
       }
     }
   });
@@ -224,7 +246,10 @@ function golangciJSON(inputs) {
       need(isObj(it) && typeof it.Text === 'string', `${name}: an issue has no Text`);
       const pos = isObj(it.Pos) ? it.Pos : {};
       const linter = typeof it.FromLinter === 'string' && it.FromLinter ? it.FromLinter : 'golangci-lint';
-      failures.push(failure(linter === 'typecheck' ? 'type' : 'lint', `${linter}: ${it.Text}`, { loc: location(pos.Filename, pos.Line, pos.Column) }));
+      // typecheck issues carry a placeholder Pos (line 1, column 0); the real position is the first file:line:col of Text.
+      const at = linter === 'typecheck' ? it.Text.match(/([^\s:]+\.go):(\d+)(?::(\d+))?/) : undefined;
+      const loc = linter === 'typecheck' ? at && location(at[1], +at[2], +at[3]) : location(pos.Filename, pos.Line, pos.Column);
+      failures.push(failure(linter === 'typecheck' ? 'type' : 'lint', `${linter}: ${it.Text}`, { loc }));
     }
   }
   return { failures };
@@ -272,8 +297,8 @@ function osvJSON(inputs) {
   const failures = [];
   for (const { name, text } of inputs) {
     const doc = parseJSON(text, name);
-    need(isObj(doc) && Array.isArray(doc.results), `${name} is not an osv-scanner JSON report (no results list)`);
-    for (const r of doc.results) {
+    need(isObj(doc) && (doc.results === null || Array.isArray(doc.results)), `${name} is not an osv-scanner JSON report (no results list)`);
+    for (const r of doc.results ?? []) {
       need(isObj(r) && Array.isArray(r.packages ?? []), `${name}: a result has no packages list`);
       for (const p of r.packages ?? []) {
         need(isObj(p) && isObj(p.package) && typeof p.package.name === 'string', `${name}: a package entry has no package name`);
@@ -309,7 +334,8 @@ function sqlcText(inputs) {
   return { failures, notes: other ? [`${other} lines of sqlc output had no file:line:col and are not failures; the log has them.`] : [] };
 }
 
-// oasdiff breaking --format json: a list of changes, [] when there are none.
+// oasdiff breaking --format json: a list of changes, [] when there are none. Every change counts as a failure, whatever
+// its level: the realm's go-contract.sh treats any output but [] as breaking.
 function oasdiffJSON(inputs) {
   const failures = [];
   for (const { name, text } of inputs) {
