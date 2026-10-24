@@ -3,7 +3,7 @@ module github.com/ouroboric-dev/gleipnir
 go 1.26
 
 require (
-	github.com/ouroboric-dev/gungnir v0.0.0-20261024180427-5cacc76c7c3c
+	github.com/ouroboric-dev/gungnir v0.0.0-20261024190432-abc73a1a1246
 	go.yaml.in/yaml/v3 v3.0.5
 )
 
