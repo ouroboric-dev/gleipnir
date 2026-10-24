@@ -44,7 +44,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends iptables dnsmas
 FROM ${STACK_IMAGE} AS work
 COPY --from=tools /opt/ygg /opt/ygg
 RUN command -v bash >/dev/null && command -v timeout >/dev/null && command -v git >/dev/null \
- || { echo "the stack image needs bash, timeout and git" >&2; exit 1; }
+ && command -v sh >/dev/null && command -v realpath >/dev/null && command -v head >/dev/null && command -v env >/dev/null \
+ || { echo "the stack image needs bash, timeout, git, sh, realpath, head and env" >&2; exit 1; }
 RUN mkdir -p /home/ygg /etc/claude-code && chmod 1777 /home/ygg
 COPY managed-settings.json /etc/claude-code/managed-settings.json
 ENV PATH=/opt/ygg/bin:$PATH \

@@ -31,9 +31,16 @@ func TestTheFactoryLayerIsPinned(t *testing.T) {
 		t.Error("a base image or the gitleaks archive isn't pinned by digest")
 	}
 	for _, want := range []string{"sha256sum -c", "npm install -g --prefix /opt/ygg", "DISABLE_AUTOUPDATER=1", "AS fw", "AS work", "iptables dnsmasq-base",
-		"the stack image needs bash, timeout and git"} {
+		"the stack image needs bash, timeout, git, sh, realpath, head and env"} {
 		if !strings.Contains(containerfile, want) {
 			t.Errorf("the Containerfile lacks %q", want)
+		}
+	}
+	// The guarded reads of a draft and of a check's result run sh, realpath and head in the work image, and a
+	// check's command runs under env.
+	for _, tool := range []string{"bash", "timeout", "git", "sh", "realpath", "head", "env"} {
+		if !strings.Contains(containerfile, "command -v "+tool+" >/dev/null") {
+			t.Errorf("the stack image check does not require %s", tool)
 		}
 	}
 	if strings.Contains(containerfile, "@latest") || strings.Contains(containerfile, "ANTHROPIC_API_KEY") {
@@ -49,6 +56,11 @@ func TestTheFactoryLayerIsPinned(t *testing.T) {
 func TestTheLockFilePinsAjv(t *testing.T) {
 	if !strings.Contains(submitPackage, `"ajv": "`+AjvVersion+`"`) || !strings.Contains(submitLock, `"node_modules/ajv": {`) || !strings.Contains(submitLock, `"version": "`+AjvVersion+`"`) {
 		t.Errorf("the package file or the lock file does not pin ajv %s", AjvVersion)
+	}
+	for name, body := range map[string]string{"package.json": submitPackage, "package-lock.json": submitLock} {
+		if !strings.Contains(body, `"name": "ygg-submit-validator"`) || strings.Contains(body, "test-deps") {
+			t.Errorf("%s does not name the package ygg-submit-validator", name)
+		}
 	}
 }
 

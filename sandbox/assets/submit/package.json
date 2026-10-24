@@ -1,5 +1,5 @@
 {
-  "name": "ygg-submit-test-deps",
+  "name": "ygg-submit-validator",
   "private": true,
   "dependencies": {
     "ajv": "8.17.1"
