@@ -1,0 +1,24 @@
+{
+  "check": "web-security",
+  "passed": false,
+  "exit_code": 1,
+  "timed_out": false,
+  "duration_ms": 1500,
+  "failures": [
+    {
+      "kind": "scan",
+      "message": "lodash: Command Injection in lodash (high, https://github.com/advisories/GHSA-35jh-r3h4-6jhm, vulnerable <4.17.21, a fix is available)"
+    },
+    {
+      "kind": "scan",
+      "message": "lodash: lodash vulnerable to Code Injection via `_.template` imports key names (high, https://github.com/advisories/GHSA-r5fr-rjxr-66jc, vulnerable >=4.0.0 <=4.17.23, a fix is available)"
+    },
+    {
+      "kind": "scan",
+      "message": "minimist: Prototype Pollution in minimist (critical, https://github.com/advisories/GHSA-xvch-5gv4-984h, vulnerable >=1.0.0 <1.2.6, a fix is available)"
+    }
+  ],
+  "notes": [
+    "4 advisories below high are not failures."
+  ]
+}

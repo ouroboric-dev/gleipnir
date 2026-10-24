@@ -1,0 +1,18 @@
+{
+  "check": "web-e2e",
+  "passed": true,
+  "exit_code": 0,
+  "timed_out": false,
+  "duration_ms": 3000,
+  "counts": {
+    "run": 2,
+    "passed": 2,
+    "failed": 0,
+    "skipped": 0
+  },
+  "failures": [],
+  "passed_tests": [
+    "p.spec.ts > top",
+    "p.spec.ts > suite > passes"
+  ]
+}

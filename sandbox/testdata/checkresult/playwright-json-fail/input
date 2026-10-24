@@ -1,0 +1,397 @@
+{
+  "config": {
+    "argv": [
+      "/usr/local/bin/node",
+      "/work/node_modules/.bin/playwright",
+      "test",
+      "-c",
+      "pw.config.ts"
+    ],
+    "configFile": "/work/pw.config.ts",
+    "rootDir": "/work/e2e",
+    "failOnFlakyTests": false,
+    "forbidOnly": false,
+    "fullyParallel": false,
+    "globalSetup": null,
+    "globalTeardown": null,
+    "globalTimeout": 0,
+    "grep": {},
+    "grepInvert": null,
+    "maxFailures": 0,
+    "metadata": {
+      "actualWorkers": 1
+    },
+    "preserveOutput": "always",
+    "projects": [
+      {
+        "outputDir": "/work/test-results",
+        "repeatEach": 1,
+        "retries": 1,
+        "metadata": {
+          "actualWorkers": 1
+        },
+        "id": "",
+        "name": "",
+        "testDir": "/work/e2e",
+        "testIgnore": [],
+        "testMatch": [
+          "**/*.@(spec|test).?(c|m)[jt]s?(x)"
+        ],
+        "timeout": 30000
+      }
+    ],
+    "quiet": false,
+    "reporter": [
+      [
+        "json",
+        {
+          "outputFile": "out/pw.json"
+        }
+      ]
+    ],
+    "reportSlowTests": {
+      "max": 5,
+      "threshold": 300000
+    },
+    "shard": null,
+    "tags": [],
+    "updateSnapshots": "missing",
+    "updateSourceMethod": "patch",
+    "version": "1.63.0",
+    "workers": 6,
+    "webServer": null
+  },
+  "suites": [
+    {
+      "title": "p.spec.ts",
+      "file": "p.spec.ts",
+      "column": 0,
+      "line": 0,
+      "specs": [
+        {
+          "title": "top",
+          "ok": true,
+          "tags": [],
+          "tests": [
+            {
+              "timeout": 30000,
+              "annotations": [],
+              "expectedStatus": "passed",
+              "projectId": "",
+              "projectName": "",
+              "results": [
+                {
+                  "workerIndex": 3,
+                  "parallelIndex": 0,
+                  "status": "passed",
+                  "duration": 1,
+                  "errors": [],
+                  "stdout": [],
+                  "stderr": [],
+                  "retry": 0,
+                  "startTime": "2026-10-24T18:43:25.095Z",
+                  "annotations": [],
+                  "attachments": []
+                }
+              ],
+              "status": "expected"
+            }
+          ],
+          "id": "b49cfb94786770e5f6db-b5be00ae37fade59cd52",
+          "file": "p.spec.ts",
+          "line": 8,
+          "column": 1
+        }
+      ],
+      "suites": [
+        {
+          "title": "suite",
+          "file": "p.spec.ts",
+          "line": 2,
+          "column": 6,
+          "specs": [
+            {
+              "title": "passes",
+              "ok": true,
+              "tags": [],
+              "tests": [
+                {
+                  "timeout": 30000,
+                  "annotations": [],
+                  "expectedStatus": "passed",
+                  "projectId": "",
+                  "projectName": "",
+                  "results": [
+                    {
+                      "workerIndex": 0,
+                      "parallelIndex": 0,
+                      "status": "passed",
+                      "duration": 5,
+                      "errors": [],
+                      "stdout": [],
+                      "stderr": [],
+                      "retry": 0,
+                      "startTime": "2026-10-24T18:43:23.661Z",
+                      "annotations": [],
+                      "attachments": []
+                    }
+                  ],
+                  "status": "expected"
+                }
+              ],
+              "id": "b49cfb94786770e5f6db-37111155ffb7c59711f7",
+              "file": "p.spec.ts",
+              "line": 3,
+              "column": 3
+            },
+            {
+              "title": "fails",
+              "ok": false,
+              "tags": [],
+              "tests": [
+                {
+                  "timeout": 30000,
+                  "annotations": [],
+                  "expectedStatus": "passed",
+                  "projectId": "",
+                  "projectName": "",
+                  "results": [
+                    {
+                      "workerIndex": 0,
+                      "parallelIndex": 0,
+                      "status": "failed",
+                      "duration": 3,
+                      "error": {
+                        "message": "Error: \u001b[2mexpect(\u001b[22m\u001b[31mreceived\u001b[39m\u001b[2m).\u001b[22mtoBe\u001b[2m(\u001b[22m\u001b[32mexpected\u001b[39m\u001b[2m) // Object.is equality\u001b[22m\n\nExpected: \u001b[32m2\u001b[39m\nReceived: \u001b[31m1\u001b[39m",
+                        "stack": "Error: \u001b[2mexpect(\u001b[22m\u001b[31mreceived\u001b[39m\u001b[2m).\u001b[22mtoBe\u001b[2m(\u001b[22m\u001b[32mexpected\u001b[39m\u001b[2m) // Object.is equality\u001b[22m\n\nExpected: \u001b[32m2\u001b[39m\nReceived: \u001b[31m1\u001b[39m\n    at /work/e2e/p.spec.ts:4:35",
+                        "location": {
+                          "file": "/work/e2e/p.spec.ts",
+                          "column": 35,
+                          "line": 4
+                        },
+                        "snippet": "  2 | test.describe(\"suite\", () => {\n  3 |   test(\"passes\", () => { expect(1).toBe(1); });\n> 4 |   test(\"fails\", () => { expect(1).toBe(2); });\n    |                                   ^\n  5 |   test(\"flaky one\", async ({}, info) => { expect(info.retry).toBe(1); });\n  6 |   test.skip(\"skipped\", () => {});\n  7 | });"
+                      },
+                      "errors": [
+                        {
+                          "location": {
+                            "file": "/work/e2e/p.spec.ts",
+                            "column": 35,
+                            "line": 4
+                          },
+                          "message": "Error: \u001b[2mexpect(\u001b[22m\u001b[31mreceived\u001b[39m\u001b[2m).\u001b[22mtoBe\u001b[2m(\u001b[22m\u001b[32mexpected\u001b[39m\u001b[2m) // Object.is equality\u001b[22m\n\nExpected: \u001b[32m2\u001b[39m\nReceived: \u001b[31m1\u001b[39m\n\n  2 | test.describe(\"suite\", () => {\n  3 |   test(\"passes\", () => { expect(1).toBe(1); });\n> 4 |   test(\"fails\", () => { expect(1).toBe(2); });\n    |                                   ^\n  5 |   test(\"flaky one\", async ({}, info) => { expect(info.retry).toBe(1); });\n  6 |   test.skip(\"skipped\", () => {});\n  7 | });\n    at /work/e2e/p.spec.ts:4:35"
+                        }
+                      ],
+                      "stdout": [],
+                      "stderr": [],
+                      "retry": 0,
+                      "startTime": "2026-10-24T18:43:23.690Z",
+                      "annotations": [],
+                      "attachments": [
+                        {
+                          "name": "error-context",
+                          "contentType": "text/markdown",
+                          "path": "/work/test-results/p-suite-fails/error-context.md"
+                        }
+                      ],
+                      "errorLocation": {
+                        "file": "/work/e2e/p.spec.ts",
+                        "column": 35,
+                        "line": 4
+                      }
+                    },
+                    {
+                      "workerIndex": 1,
+                      "parallelIndex": 0,
+                      "status": "failed",
+                      "duration": 8,
+                      "error": {
+                        "message": "Error: \u001b[2mexpect(\u001b[22m\u001b[31mreceived\u001b[39m\u001b[2m).\u001b[22mtoBe\u001b[2m(\u001b[22m\u001b[32mexpected\u001b[39m\u001b[2m) // Object.is equality\u001b[22m\n\nExpected: \u001b[32m2\u001b[39m\nReceived: \u001b[31m1\u001b[39m",
+                        "stack": "Error: \u001b[2mexpect(\u001b[22m\u001b[31mreceived\u001b[39m\u001b[2m).\u001b[22mtoBe\u001b[2m(\u001b[22m\u001b[32mexpected\u001b[39m\u001b[2m) // Object.is equality\u001b[22m\n\nExpected: \u001b[32m2\u001b[39m\nReceived: \u001b[31m1\u001b[39m\n    at /work/e2e/p.spec.ts:4:35",
+                        "location": {
+                          "file": "/work/e2e/p.spec.ts",
+                          "column": 35,
+                          "line": 4
+                        },
+                        "snippet": "  2 | test.describe(\"suite\", () => {\n  3 |   test(\"passes\", () => { expect(1).toBe(1); });\n> 4 |   test(\"fails\", () => { expect(1).toBe(2); });\n    |                                   ^\n  5 |   test(\"flaky one\", async ({}, info) => { expect(info.retry).toBe(1); });\n  6 |   test.skip(\"skipped\", () => {});\n  7 | });"
+                      },
+                      "errors": [
+                        {
+                          "location": {
+                            "file": "/work/e2e/p.spec.ts",
+                            "column": 35,
+                            "line": 4
+                          },
+                          "message": "Error: \u001b[2mexpect(\u001b[22m\u001b[31mreceived\u001b[39m\u001b[2m).\u001b[22mtoBe\u001b[2m(\u001b[22m\u001b[32mexpected\u001b[39m\u001b[2m) // Object.is equality\u001b[22m\n\nExpected: \u001b[32m2\u001b[39m\nReceived: \u001b[31m1\u001b[39m\n\n  2 | test.describe(\"suite\", () => {\n  3 |   test(\"passes\", () => { expect(1).toBe(1); });\n> 4 |   test(\"fails\", () => { expect(1).toBe(2); });\n    |                                   ^\n  5 |   test(\"flaky one\", async ({}, info) => { expect(info.retry).toBe(1); });\n  6 |   test.skip(\"skipped\", () => {});\n  7 | });\n    at /work/e2e/p.spec.ts:4:35"
+                        }
+                      ],
+                      "stdout": [],
+                      "stderr": [],
+                      "retry": 1,
+                      "startTime": "2026-10-24T18:43:24.128Z",
+                      "annotations": [],
+                      "attachments": [
+                        {
+                          "name": "error-context",
+                          "contentType": "text/markdown",
+                          "path": "/work/test-results/p-suite-fails-retry1/error-context.md"
+                        }
+                      ],
+                      "errorLocation": {
+                        "file": "/work/e2e/p.spec.ts",
+                        "column": 35,
+                        "line": 4
+                      }
+                    }
+                  ],
+                  "status": "unexpected"
+                }
+              ],
+              "id": "b49cfb94786770e5f6db-cfcb935de6a11dc2f6fd",
+              "file": "p.spec.ts",
+              "line": 4,
+              "column": 3
+            },
+            {
+              "title": "flaky one",
+              "ok": true,
+              "tags": [],
+              "tests": [
+                {
+                  "timeout": 30000,
+                  "annotations": [],
+                  "expectedStatus": "passed",
+                  "projectId": "",
+                  "projectName": "",
+                  "results": [
+                    {
+                      "workerIndex": 2,
+                      "parallelIndex": 0,
+                      "status": "failed",
+                      "duration": 5,
+                      "error": {
+                        "message": "Error: \u001b[2mexpect(\u001b[22m\u001b[31mreceived\u001b[39m\u001b[2m).\u001b[22mtoBe\u001b[2m(\u001b[22m\u001b[32mexpected\u001b[39m\u001b[2m) // Object.is equality\u001b[22m\n\nExpected: \u001b[32m1\u001b[39m\nReceived: \u001b[31m0\u001b[39m",
+                        "stack": "Error: \u001b[2mexpect(\u001b[22m\u001b[31mreceived\u001b[39m\u001b[2m).\u001b[22mtoBe\u001b[2m(\u001b[22m\u001b[32mexpected\u001b[39m\u001b[2m) // Object.is equality\u001b[22m\n\nExpected: \u001b[32m1\u001b[39m\nReceived: \u001b[31m0\u001b[39m\n    at /work/e2e/p.spec.ts:5:62",
+                        "location": {
+                          "file": "/work/e2e/p.spec.ts",
+                          "column": 62,
+                          "line": 5
+                        },
+                        "snippet": "  3 |   test(\"passes\", () => { expect(1).toBe(1); });\n  4 |   test(\"fails\", () => { expect(1).toBe(2); });\n> 5 |   test(\"flaky one\", async ({}, info) => { expect(info.retry).toBe(1); });\n    |                                                              ^\n  6 |   test.skip(\"skipped\", () => {});\n  7 | });\n  8 | test(\"top\", () => { expect(1).toBe(1); });"
+                      },
+                      "errors": [
+                        {
+                          "location": {
+                            "file": "/work/e2e/p.spec.ts",
+                            "column": 62,
+                            "line": 5
+                          },
+                          "message": "Error: \u001b[2mexpect(\u001b[22m\u001b[31mreceived\u001b[39m\u001b[2m).\u001b[22mtoBe\u001b[2m(\u001b[22m\u001b[32mexpected\u001b[39m\u001b[2m) // Object.is equality\u001b[22m\n\nExpected: \u001b[32m1\u001b[39m\nReceived: \u001b[31m0\u001b[39m\n\n  3 |   test(\"passes\", () => { expect(1).toBe(1); });\n  4 |   test(\"fails\", () => { expect(1).toBe(2); });\n> 5 |   test(\"flaky one\", async ({}, info) => { expect(info.retry).toBe(1); });\n    |                                                              ^\n  6 |   test.skip(\"skipped\", () => {});\n  7 | });\n  8 | test(\"top\", () => { expect(1).toBe(1); });\n    at /work/e2e/p.spec.ts:5:62"
+                        }
+                      ],
+                      "stdout": [],
+                      "stderr": [],
+                      "retry": 0,
+                      "startTime": "2026-10-24T18:43:24.643Z",
+                      "annotations": [],
+                      "attachments": [
+                        {
+                          "name": "error-context",
+                          "contentType": "text/markdown",
+                          "path": "/work/test-results/p-suite-flaky-one/error-context.md"
+                        }
+                      ],
+                      "errorLocation": {
+                        "file": "/work/e2e/p.spec.ts",
+                        "column": 62,
+                        "line": 5
+                      }
+                    },
+                    {
+                      "workerIndex": 3,
+                      "parallelIndex": 0,
+                      "status": "passed",
+                      "duration": 5,
+                      "errors": [],
+                      "stdout": [],
+                      "stderr": [],
+                      "retry": 1,
+                      "startTime": "2026-10-24T18:43:25.064Z",
+                      "annotations": [],
+                      "attachments": []
+                    }
+                  ],
+                  "status": "flaky"
+                }
+              ],
+              "id": "b49cfb94786770e5f6db-cba3258ae9338fb8a54c",
+              "file": "p.spec.ts",
+              "line": 5,
+              "column": 3
+            },
+            {
+              "title": "skipped",
+              "ok": true,
+              "tags": [],
+              "tests": [
+                {
+                  "timeout": 30000,
+                  "annotations": [
+                    {
+                      "type": "skip",
+                      "location": {
+                        "file": "/work/e2e/p.spec.ts",
+                        "line": 6,
+                        "column": 8
+                      }
+                    }
+                  ],
+                  "expectedStatus": "skipped",
+                  "projectId": "",
+                  "projectName": "",
+                  "results": [
+                    {
+                      "workerIndex": 3,
+                      "parallelIndex": 0,
+                      "status": "skipped",
+                      "duration": 0,
+                      "errors": [],
+                      "stdout": [],
+                      "stderr": [],
+                      "retry": 0,
+                      "startTime": "2026-10-24T18:43:25.095Z",
+                      "annotations": [
+                        {
+                          "type": "skip",
+                          "location": {
+                            "file": "/work/e2e/p.spec.ts",
+                            "line": 6,
+                            "column": 8
+                          }
+                        }
+                      ],
+                      "attachments": []
+                    }
+                  ],
+                  "status": "skipped"
+                }
+              ],
+              "id": "b49cfb94786770e5f6db-8b0671d5706d584fca60",
+              "file": "p.spec.ts",
+              "line": 6,
+              "column": 8
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "errors": [],
+  "stats": {
+    "startTime": "2026-10-24T18:43:23.286Z",
+    "duration": 1835.774,
+    "expected": 2,
+    "skipped": 1,
+    "unexpected": 1,
+    "flaky": 1
+  }
+}

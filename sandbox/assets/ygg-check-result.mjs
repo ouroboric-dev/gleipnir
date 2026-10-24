@@ -2,12 +2,13 @@
 // ygg-check-result: converts one check tool's machine output into the factory's typed result, ygg.check/v1 (change
 // typed-boundaries, design section 4). A realm's check script runs its tool, keeps the exit code, and calls
 //   ygg-check-result --check NAME --exit CODE [--timed-out] --duration-ms N --format FORMAT
-//                    [--input FILE]... [--kind KIND --message TEXT]...
+//                    [--input FILE]... [--kind KIND --message TEXT]... [--root DIR] [--level LEVEL]
 // The result goes to the file named by $YGG_CHECK_RESULT, written whole through a temp file in the same folder and a
 // rename. The tool exits 0 once it has written the result, and 2, with the reason on stderr and no result, when it
 // cannot read its inputs: the check script then exits non-zero, which is a realm failure and not a finding.
 //
-// Formats: go-test-json, go-vet-json, golangci-json, govulncheck-json, osv-json, sqlc-text, oasdiff-json, none
+// Formats: go-test-json, go-vet-json, golangci-json, govulncheck-json, osv-json, sqlc-text, oasdiff-json, vitest-json,
+// playwright-json, eslint-json, tsc-text, npm-audit-json, none
 // (no tool output: the --kind/--message pairs only, for a policy check). Node standard library only; the JSON
 // formats are read strictly and a document of another shape is refused.
 //
@@ -350,6 +351,187 @@ function oasdiffJSON(inputs) {
   return { failures };
 }
 
+// The web tools. Paths in their output are absolute; --root (default: the working folder) is the folder they are
+// made relative to, so that a test id or a location reads the same in every checkout.
+const ANSI = /\u001b\[[0-9;]*m/g;
+const plain = (s) => String(s).replace(ANSI, '');
+const relPath = (p, root) => {
+  if (typeof p !== 'string') return p;
+  const base = root.endsWith('/') ? root : root + '/';
+  return p.startsWith(base) ? p.slice(base.length) : p;
+};
+const joinId = (parts) => {
+  const id = parts.filter((s) => typeof s === 'string' && s !== '').join(' > ');
+  return id && [...id].length <= MAX_ID ? id : undefined;
+};
+const frameRe = /([^\s()]+):(\d+):(\d+)\)?\s*$/;
+
+// vitest run --reporter=json: {"testResults": [{"name": file, "status", "message", "assertionResults": [{"ancestorTitles",
+// "title", "status", "failureMessages"}]}]}. A test's id is "file > describe > name", the file relative to the root
+// (fullName joins with spaces and cannot be told from a title with spaces); failures[].test has the same form.
+// passed_tests holds the assertions with status passed. A file that failed with no failed test of its own (an import
+// error, a hook) is one failure with no test id.
+function vitestJSON(inputs, ctx) {
+  const failures = [], passed = new Set(), failed = new Set();
+  let np = 0, nf = 0, ns = 0;
+  for (const { name, text } of inputs) {
+    const doc = parseJSON(text, name);
+    need(isObj(doc) && Array.isArray(doc.testResults), `${name} is not a vitest JSON report (no testResults list)`);
+    for (const f of doc.testResults) {
+      need(isObj(f) && typeof f.name === 'string' && (f.assertionResults === undefined || Array.isArray(f.assertionResults)), `${name}: a test file entry has no name or assertion list`);
+      const file = relPath(f.name, ctx.root);
+      let own = 0;
+      for (const t of f.assertionResults ?? []) {
+        need(isObj(t) && typeof t.title === 'string' && typeof t.status === 'string', `${name}: a test in ${file} has no title or status`);
+        const id = joinId([file, ...(Array.isArray(t.ancestorTitles) ? t.ancestorTitles : []), t.title]);
+        if (t.status === 'passed') { np++; if (id) passed.add(id); }
+        else if (t.status === 'failed') {
+          nf++; own++;
+          if (id) { if (failed.has(id)) continue; failed.add(id); }
+          const msgs = (Array.isArray(t.failureMessages) ? t.failureMessages : []).map(plain);
+          // Stack frames are noise in the message; the first frame outside node_modules is the location.
+          const body = msgs.map((m) => m.split('\n').filter((l) => !/^\s+at /.test(l)).join('\n')).join('\n\n');
+          const frames = msgs.join('\n').split('\n').filter((l) => /^\s+at /.test(l)).map((l) => l.match(frameRe)).filter(Boolean);
+          const fr = frames.find((m) => !m[1].includes('node_modules'));
+          failures.push(failure('test', id ? body : `${file}: ${t.title}: ${body}`, { test: id, loc: fr && location(relPath(fr[1].replace(/^file:\/\//, ''), ctx.root), +fr[2], +fr[3]) }));
+        } else ns++;
+      }
+      if (f.status === 'failed' && own === 0) failures.push(failure('test', `${file}: ${plain(f.message || 'the test file failed to run')}`));
+    }
+  }
+  for (const id of failed) passed.delete(id);
+  return { failures, passedTests: [...passed], counts: { run: np + nf + ns, passed: np, failed: nf, skipped: ns } };
+}
+
+// playwright test --reporter=json: {"suites": [{"title": file, "specs": [...], "suites": [describes]}], "errors": []}.
+// A spec holds one test per project, each with "results", one per attempt. A test passes when its final attempt
+// passed: status "expected", and "flaky" (failed, then passed on a retry), which also gets a note naming it. "unexpected"
+// is a failure and "skipped" a skip. The id is "[project] file > describe > name" (the project part only when the
+// project has a name), the file as the report gives it, relative to the config's testDir. Errors outside any test (a
+// config or import failure) are failures with no test id.
+function playwrightJSON(inputs, ctx) {
+  const failures = [], passed = new Set(), failed = new Set(), flaky = [];
+  let np = 0, nf = 0, ns = 0;
+  const errorFailure = (e, prefix) => {
+    const msg = plain(isObj(e) ? (e.message ?? e.value ?? 'failed') : 'failed');
+    const l = isObj(e) && isObj(e.location) ? e.location : {};
+    return failure('test', prefix ? `${prefix}: ${msg}` : msg, { loc: location(relPath(l.file, ctx.root), l.line, l.column) });
+  };
+  for (const { name, text } of inputs) {
+    const doc = parseJSON(text, name);
+    need(isObj(doc) && Array.isArray(doc.suites), `${name} is not a Playwright JSON report (no suites list)`);
+    const walk = (suite, trail) => {
+      need(isObj(suite) && typeof suite.title === 'string', `${name}: a suite has no title`);
+      const here = [...trail, suite.title];
+      for (const spec of suite.specs ?? []) {
+        need(isObj(spec) && typeof spec.title === 'string' && Array.isArray(spec.tests), `${name}: a spec of ${suite.title} has no title or tests`);
+        for (const t of spec.tests) {
+          need(isObj(t) && typeof t.status === 'string' && Array.isArray(t.results), `${name}: test ${spec.title} has no status or results`);
+          const id = joinId([(t.projectName ? `[${t.projectName}] ` : '') + here[0], ...here.slice(1), spec.title]);
+          if (t.status === 'expected' || t.status === 'flaky') {
+            np++;
+            if (id) passed.add(id);
+            if (t.status === 'flaky') flaky.push(id ?? spec.title);
+          } else if (t.status === 'skipped') ns++;
+          else if (t.status === 'unexpected') {
+            nf++;
+            if (id) { if (failed.has(id)) continue; failed.add(id); }
+            const last = t.results[t.results.length - 1];
+            const err = isObj(last) ? (last.error ?? (Array.isArray(last.errors) ? last.errors[0] : undefined)) : undefined;
+            const f = errorFailure(err ?? { message: `failed with status ${last?.status ?? 'unknown'}` }, id ? '' : `${here.join(' > ')} > ${spec.title}`);
+            if (id) f.test = id;
+            failures.push(f);
+          } else throw new Refuse(`${name}: test ${spec.title} has status ${JSON.stringify(t.status)}, not one of expected, unexpected, flaky, skipped`);
+        }
+      }
+      for (const s of suite.suites ?? []) walk(s, here);
+    };
+    for (const s of doc.suites) walk(s, []);
+    for (const e of Array.isArray(doc.errors) ? doc.errors : []) failures.push(errorFailure(e));
+  }
+  for (const id of failed) passed.delete(id);
+  const notes = flaky.length ? [`Flaky tests (failed, then passed on a retry) count as passed: ${flaky.length}${flaky.length > 10 ? ', the first 10' : ''}: ${flaky.slice(0, 10).join(', ')}.`] : [];
+  return { failures, passedTests: [...passed], counts: { run: np + nf + ns, passed: np, failed: nf, skipped: ns }, notes };
+}
+
+// eslint -f json: [{"filePath", "messages": [{"ruleId", "severity", "message", "line", "column"}]}]. An error (severity 2,
+// which includes a parse error with no rule) is a failure; warnings are counted in a note.
+function eslintJSON(inputs, ctx) {
+  const failures = [];
+  let warnings = 0;
+  for (const { name, text } of inputs) {
+    const doc = parseJSON(text, name);
+    need(Array.isArray(doc), `${name} is not an ESLint JSON report (not a list of files)`);
+    for (const f of doc) {
+      need(isObj(f) && typeof f.filePath === 'string' && Array.isArray(f.messages), `${name}: a file entry has no filePath or messages`);
+      for (const m of f.messages) {
+        need(isObj(m) && typeof m.message === 'string' && Number.isInteger(m.severity), `${name}: a message in ${f.filePath} has no text or severity`);
+        if (m.severity !== 2) { warnings++; continue; }
+        failures.push(failure('lint', `${m.ruleId ? m.ruleId + ': ' : ''}${m.message}`, { loc: location(relPath(f.filePath, ctx.root), m.line, m.column) }));
+      }
+    }
+  }
+  return { failures, notes: warnings ? [`${warnings} warnings are not failures; the log has them.`] : [] };
+}
+
+// tsc (--pretty false): "file(line,col): error TSnnnn: message", and lines indented under it that continue the message.
+// A diagnostic with no file ("error TS5023: ...") has no location. Warnings do not exist in tsc; other lines are counted.
+function tscText(inputs, ctx) {
+  const failures = [];
+  let other = 0;
+  for (const { name, text } of inputs) {
+    need(!text.includes('\0') && !text.includes('�'), `${name} is not text`);
+    let cur;
+    const flush = () => {
+      if (!cur) return;
+      failures.push(failure('type', `${cur.code}: ${textOf([cur.first, ...cur.rest])}`, { loc: cur.loc }));
+      cur = undefined;
+    };
+    for (const l of plain(text).split('\n')) {
+      const m = l.match(/^(?:(.+?)\((\d+),(\d+)\): )?error (TS\d+): (.*)$/);
+      if (m) {
+        flush();
+        cur = { code: m[4], first: m[5], rest: [], loc: m[1] && location(relPath(m[1], ctx.root), +m[2], +m[3]) };
+      } else if (cur && /^\s+\S/.test(l)) cur.rest.push(l);
+      else if (l.trim()) { flush(); other++; }
+    }
+    flush();
+  }
+  return { failures, notes: other ? [`${other} lines of tsc output are not diagnostics and are not failures; the log has them.`] : [] };
+}
+
+// npm audit --json (report version 2): {"vulnerabilities": {pkg: {"severity", "via": [advisory | "other-package"],
+// "fixAvailable"}}}. An advisory is a "via" entry that is an object (a string names the package it came through, whose
+// own entry holds the advisory); it is listed once by its source id. One failure per advisory at --level or above;
+// the rest are counted in a note. An {"error"} document (the registry could not be reached) is refused: it is a
+// realm failure, not a finding.
+const SEVERITIES = ['info', 'low', 'moderate', 'high', 'critical'];
+function npmAuditJSON(inputs, ctx) {
+  const min = SEVERITIES.indexOf(ctx.level);
+  const failures = [], seen = new Set();
+  let below = 0;
+  for (const { name, text } of inputs) {
+    const doc = parseJSON(text, name);
+    need(isObj(doc), `${name} is not an npm audit JSON report`);
+    need(!isObj(doc.error), `${name} is an npm audit error: ${isObj(doc.error) ? (doc.error.summary ?? doc.error.code ?? 'unknown') : ''}`);
+    need(isObj(doc.vulnerabilities), `${name} is not an npm audit JSON report (no vulnerabilities map)`);
+    for (const [pkg, v] of Object.entries(doc.vulnerabilities)) {
+      need(isObj(v) && Array.isArray(v.via), `${name}: ${pkg} has no via list`);
+      for (const a of v.via) {
+        if (!isObj(a)) continue;
+        need(typeof a.title === 'string' && SEVERITIES.includes(a.severity), `${name}: an advisory of ${pkg} has no title or a known severity`);
+        const key = a.source ?? `${a.name}\0${a.title}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        if (SEVERITIES.indexOf(a.severity) < min) { below++; continue; }
+        const fix = v.fixAvailable === false ? ', no fix is available' : isObj(v.fixAvailable) ? `, fix: ${v.fixAvailable.name}@${v.fixAvailable.version}${v.fixAvailable.isSemVerMajor ? ' (major)' : ''}` : v.fixAvailable === true ? ', a fix is available' : '';
+        failures.push(failure('scan', `${a.name ?? pkg}: ${a.title} (${a.severity}${a.url ? ', ' + a.url : ''}${a.range ? ', vulnerable ' + a.range : ''}${fix})`));
+      }
+    }
+  }
+  return { failures, notes: below ? [`${below} advisories below ${ctx.level} are not failures.`] : [] };
+}
+
 const FORMATS = {
   'go-test-json': goTestJSON,
   'go-vet-json': goVetJSON,
@@ -358,6 +540,11 @@ const FORMATS = {
   'osv-json': osvJSON,
   'sqlc-text': sqlcText,
   'oasdiff-json': oasdiffJSON,
+  'vitest-json': vitestJSON,
+  'playwright-json': playwrightJSON,
+  'eslint-json': eslintJSON,
+  'tsc-text': tscText,
+  'npm-audit-json': npmAuditJSON,
 };
 
 function readInput(file) {
@@ -392,7 +579,7 @@ function parseArgs(argv) {
   for (let i = 0; i < argv.length; i++) {
     const flag = argv[i];
     if (flag === '--timed-out') { a.timedOut = true; continue; }
-    if (!['--check', '--exit', '--duration-ms', '--format', '--input', '--kind', '--message'].includes(flag)) throw new Refuse(`unknown argument ${flag}`);
+    if (!['--check', '--exit', '--duration-ms', '--format', '--input', '--kind', '--message', '--root', '--level'].includes(flag)) throw new Refuse(`unknown argument ${flag}`);
     need(i + 1 < argv.length, `${flag} needs a value`);
     const v = argv[++i];
     if (flag === '--input') a.inputs.push(v);
@@ -414,6 +601,11 @@ function parseArgs(argv) {
   a.durationMs = Number(a.durationMs);
   need(Number.isSafeInteger(a.exit) && Number.isSafeInteger(a.durationMs), '--exit and --duration-ms must be safe integers');
   need(a.format === 'none' || a.format in FORMATS, `--format ${a.format} is not one of ${[...Object.keys(FORMATS), 'none'].join(', ')}`);
+  need(a.level === undefined || a.format === 'npm-audit-json', '--level is for the npm-audit-json format');
+  a.level ??= 'high';
+  need(SEVERITIES.includes(a.level), `--level ${a.level} is not one of ${SEVERITIES.join(', ')}`);
+  need(a.root === undefined || (a.root.startsWith('/') && a.root.length > 1), '--root needs an absolute folder');
+  a.root ??= process.cwd();
   if (a.format === 'none') need(a.inputs.length === 0, 'the none format takes no --input');
   else {
     need(a.inputs.length > 0, `--format ${a.format} needs at least one --input`);
@@ -425,7 +617,7 @@ function parseArgs(argv) {
 function build(a) {
   let r;
   if (a.format === 'none') r = { failures: a.pairs.map(([kind, message]) => failure(kind, message)) };
-  else r = FORMATS[a.format](a.inputs.map((f) => ({ name: f, text: readInput(f) })), { timedOut: a.timedOut });
+  else r = FORMATS[a.format](a.inputs.map((f) => ({ name: f, text: readInput(f) })), { timedOut: a.timedOut, root: a.root, level: a.level });
   const notes = [...(r.notes ?? [])];
   const found = r.failures.length;
   // Passed follows the exit code. A tool that exits 0 while its output shows failures contradicts itself; the result

@@ -1,0 +1,12 @@
+--check
+web-x
+--exit
+1
+--duration-ms
+5
+--format
+npm-audit-json
+--input
+input
+--level
+high

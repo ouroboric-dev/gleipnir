@@ -1,0 +1,19 @@
+{
+  "check": "web-static",
+  "passed": false,
+  "exit_code": 1,
+  "timed_out": false,
+  "duration_ms": 800,
+  "failures": [
+    {
+      "kind": "lint",
+      "location": "src/lint.js:1:5",
+      "message": "no-unused-vars: 'unused' is assigned a value but never used."
+    },
+    {
+      "kind": "lint",
+      "location": "src/lint.js:2:1",
+      "message": "no-debugger: Unexpected 'debugger' statement."
+    }
+  ]
+}

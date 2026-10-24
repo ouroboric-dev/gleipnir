@@ -1,0 +1,12 @@
+--check
+web-static
+--exit
+0
+--duration-ms
+800
+--format
+eslint-json
+--input
+input
+--root
+/work

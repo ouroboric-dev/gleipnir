@@ -1,0 +1,19 @@
+{
+  "check": "web-static",
+  "passed": false,
+  "exit_code": 2,
+  "timed_out": false,
+  "duration_ms": 700,
+  "failures": [
+    {
+      "kind": "type",
+      "location": "src/a.ts:1:14",
+      "message": "TS2322: Type 'string' is not assignable to type 'number'."
+    },
+    {
+      "kind": "type",
+      "location": "src/multi.ts:3:3",
+      "message": "TS2345: Argument of type '{ a: { b: number; }; }' is not assignable to parameter of type '{ a: { b: string; }; }'.\n  The types of 'a.b' are incompatible between these types.\n    Type 'number' is not assignable to type 'string'."
+    }
+  ]
+}

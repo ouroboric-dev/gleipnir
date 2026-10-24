@@ -1,0 +1,12 @@
+--check
+web-e2e
+--exit
+0
+--duration-ms
+3000
+--format
+playwright-json
+--input
+input
+--root
+/work

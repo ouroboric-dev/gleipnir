@@ -133,6 +133,10 @@ func TestTheConverterReadsEachGoTool(t *testing.T) {
 	runCases(t, "go-test-json", "go-vet-json", "golangci-json", "govulncheck-json", "osv-json", "sqlc-text", "oasdiff-json", "none")
 }
 
+func TestTheConverterReadsEachWebTool(t *testing.T) {
+	runCases(t, "vitest-json", "playwright-json", "eslint-json", "tsc-text", "npm-audit-json")
+}
+
 // fixture writes files into a new folder and returns it.
 func fixture(t *testing.T, files map[string]string) string {
 	t.Helper()
@@ -336,5 +340,83 @@ func TestTheNoticesOfTheJSONToolsAreRead(t *testing.T) {
 	r := run("golangci-json", `{"Issues":[{"FromLinter":"typecheck","Text":"could not import x","Pos":{"Filename":"","Line":1,"Column":0}}]}`)
 	if len(r.Failures) != 1 || r.Failures[0].Location != "" || r.Failures[0].Kind != "type" {
 		t.Errorf("got %+v", r.Failures)
+	}
+}
+
+func TestTheWebToolsHandleTheirEdgeCases(t *testing.T) {
+	tool := checkResultTool(t)
+	advisory := func(src int, name, sev string) string {
+		return `{"source":1` + string(rune('0'+src)) + `,"name":"` + name + `","title":"t ` + name + `","url":"https://x/` + name + `","severity":"` + sev + `","range":"<2"}`
+	}
+	audit := `{"auditReportVersion":2,"vulnerabilities":{` +
+		`"a":{"name":"a","severity":"critical","via":[` + advisory(1, "a", "moderate") + `,` + advisory(2, "a", "critical") + `],"fixAvailable":false},` +
+		`"b":{"name":"b","severity":"critical","via":["a"],"fixAvailable":{"name":"a","version":"2.0.0","isSemVerMajor":true}},` +
+		`"c":{"name":"c","severity":"low","via":[` + advisory(2, "a", "critical") + `],"fixAvailable":true}}}`
+	for _, c := range []struct {
+		name, format, input string
+		args                []string
+		wantCode            int
+		wantFailures        int
+		wantStderr          string
+		want                []string
+	}{
+		// "via" strings are packages the advisory came through, not advisories; a shared source is listed once.
+		{"audit at moderate", "npm-audit-json", audit, []string{"--level", "moderate"}, 0, 2, "", []string{"no fix is available"}},
+		{"audit at critical", "npm-audit-json", audit, []string{"--level", "critical"}, 0, 1, "", []string{"1 advisories below critical"}},
+		{"audit defaults to the realm's high", "npm-audit-json", audit, nil, 0, 1, "", nil},
+		{"audit error document", "npm-audit-json", `{"error":{"code":"ENOAUDIT","summary":"audit endpoint returned an error"}}`, nil, 2, 0, "npm audit error: audit endpoint returned an error", nil},
+		{"audit level unknown", "npm-audit-json", audit, []string{"--level", "severe"}, 2, 0, "--level severe is not one of", nil},
+		{"level on another format", "eslint-json", `[]`, []string{"--level", "high"}, 2, 0, "--level is for the npm-audit-json format", nil},
+		{"eslint warnings are not failures", "eslint-json", `[{"filePath":"/w/a.js","messages":[{"ruleId":"semi","severity":1,"message":"m","line":1,"column":1}]}]`, nil, 0, 0, "", []string{"1 warnings are not failures"}},
+		{"eslint parse error has no rule", "eslint-json", `[{"filePath":"/w/a.js","messages":[{"ruleId":null,"fatal":true,"severity":2,"message":"Parsing error: x","line":3,"column":2}]}]`, []string{"--root", "/w"}, 0, 1, "", []string{`"a.js:3:2"`}},
+		{"root defaults to the working folder", "eslint-json", "", nil, 0, 1, "", []string{`"src/a.js:3:2"`}},
+		{"relative root", "eslint-json", `[]`, []string{"--root", "w"}, 2, 0, "--root needs an absolute folder", nil},
+		// The same title twice, once failing: the test is a failure and is not listed as passed.
+		{"vitest duplicate title", "vitest-json", `{"testResults":[{"name":"/w/a.test.ts","status":"failed","assertionResults":[` +
+			`{"ancestorTitles":["d"],"title":"t","status":"passed","failureMessages":[]},` +
+			`{"ancestorTitles":["d"],"title":"t","status":"failed","failureMessages":["Error: no\n    at /w/a.test.ts:2:3"]}]}]}`, []string{"--root", "/w"}, 0, 1, "", []string{`"a.test.ts > d > t"`, `"a.test.ts:2:3"`}},
+		{"vitest not a report", "vitest-json", `{"tests":[]}`, nil, 2, 0, "no testResults list", nil},
+		{"playwright project names and a final failure after a retry", "playwright-json", `{"suites":[{"title":"a.spec.ts","specs":[{"title":"t","tests":[` +
+			`{"projectName":"chromium","status":"unexpected","results":[{"status":"failed","error":{"message":"first"}},{"status":"timedOut","error":{"message":"Test timeout of 30000ms exceeded."}}]},` +
+			`{"projectName":"firefox","status":"expected","results":[{"status":"passed"}]}]}]}]}`, nil, 0, 1, "", []string{`"[chromium] a.spec.ts > t"`, `"[firefox] a.spec.ts > t"`, "Test timeout of 30000ms"}},
+		{"playwright error outside any test", "playwright-json", `{"suites":[],"errors":[{"message":"Error: Cannot find module 'x'","location":{"file":"/w/p.spec.ts","line":1,"column":8}}]}`, []string{"--root", "/w"}, 0, 1, "", []string{`"p.spec.ts:1:8"`}},
+		{"playwright unknown status", "playwright-json", `{"suites":[{"title":"a","specs":[{"title":"t","tests":[{"status":"weird","results":[]}]}]}]}`, nil, 2, 0, "not one of expected", nil},
+		{"tsc diagnostic with no file", "tsc-text", "error TS5023: Unknown compiler option 'foo'.\n", nil, 0, 1, "", []string{"TS5023"}},
+		{"tsc notes other lines", "tsc-text", "Found 1 error.\n", nil, 0, 0, "", []string{"1 lines of tsc output"}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			input := c.input
+			if c.name == "root defaults to the working folder" {
+				input = ""
+			}
+			dir := fixture(t, map[string]string{"in": input})
+			if c.name == "root defaults to the working folder" {
+				real, _ := filepath.EvalSymlinks(dir)
+				dir = real
+				if err := os.WriteFile(filepath.Join(dir, "in"), []byte(`[{"filePath":"`+dir+`/src/a.js","messages":[{"ruleId":null,"severity":2,"message":"x","line":3,"column":2}]}]`), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			args := append([]string{"--check", "c", "--exit", "1", "--duration-ms", "1", "--format", c.format, "--input", "in"}, c.args...)
+			got, code, stderr := convert(t, tool, dir, args)
+			if code != c.wantCode || (c.wantStderr != "" && !strings.Contains(stderr, c.wantStderr)) {
+				t.Fatalf("exit %d, stderr %q; want exit %d and %q", code, stderr, c.wantCode, c.wantStderr)
+			}
+			if code != 0 {
+				if got != nil {
+					t.Errorf("a refusal left a result: %s", got)
+				}
+				return
+			}
+			r := decodeResult(t, got)
+			if len(r.Failures) != c.wantFailures {
+				t.Errorf("%d failures, want %d: %s", len(r.Failures), c.wantFailures, got)
+			}
+			for _, w := range c.want {
+				if !strings.Contains(string(got), w) {
+					t.Errorf("result lacks %s:\n%s", w, got)
+				}
+			}
+		})
 	}
 }
