@@ -12,7 +12,6 @@ ARG CLAUDE_CODE_VERSION
 ARG OPENCODE_VERSION
 ARG GITLEAKS_VERSION
 ARG GITLEAKS_SHA256
-ARG AJV_VERSION
 RUN npm install -g --prefix /opt/ygg --no-audit --no-fund \
       @anthropic-ai/claude-code@${CLAUDE_CODE_VERSION} opencode-ai@${OPENCODE_VERSION} \
  && npm cache clean --force
@@ -26,7 +25,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certifi
 # contracts' schemas. The script is installed under its .mjs name, with a link for the name an MCP config starts,
 # so node reads it as a module whatever its version's detection of syntax is.
 # Its own prefix: a local install into /opt/ygg/lib would prune the CLIs, which sit in /opt/ygg/lib/node_modules.
-RUN npm install --prefix /opt/ygg/lib/ygg-submit --no-audit --no-fund --no-save ajv@${AJV_VERSION} \
+COPY submit/ /opt/ygg/lib/ygg-submit/
+RUN npm ci --prefix /opt/ygg/lib/ygg-submit --no-audit --no-fund \
  && npm cache clean --force
 COPY ygg-submit.mjs /opt/ygg/bin/ygg-submit.mjs
 COPY schemas /opt/ygg/schemas

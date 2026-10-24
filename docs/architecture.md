@@ -36,7 +36,10 @@ The harness: agent adapters, the devcontainer sandbox driver, policies and the c
   hands back its typed output. Its `submit` tool takes the output or a draft file under `out/` and its `check` tool
   takes a draft; both validate against the contract in `$YGG_OUTPUT_CONTRACT` with ajv 8.17.1 and the schemas of
   gungnir's `schema.SchemaFS()`, answer `accepted` or the errors, and write nothing. The managed settings allow
-  exactly that one MCP server, by name. The image tag hashes the script, the ajv pin and every schema.
+  exactly that one MCP server, by command (`serverCommand: ["/opt/ygg/bin/ygg-submit"]`), because a name would admit any
+  command a leaf's `.mcp.json` gave it. An adapter must start exactly `/opt/ygg/bin/ygg-submit` with no arguments and
+  pass the contract in `YGG_OUTPUT_CONTRACT`. The ajv tree comes from a lock file (`npm ci`), and the image tag hashes
+  the script, the ajv pin, both package files and every schema.
 - Tears a sandbox down with `Down`: it removes the containers by label, then the compose pod (`pod_` plus the
   project, which compose leaves behind and `podman pod prune` keeps while it is Created; removed without
   force, and no pod is no error), then the networks. `PodLeftovers` lists the factory's pods that hold no

@@ -3,6 +3,7 @@ package sandbox
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/json"
 	"io/fs"
 	"os"
@@ -11,14 +12,16 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
+	"time"
 
 	"github.com/ouroboric-dev/gungnir"
 	"github.com/ouroboric-dev/gungnir/schema"
 )
 
 // The tests of ygg-submit run the real script under node, in the layout of the work image: bin/ygg-submit,
-// lib/ygg-submit/node_modules (ajv, installed from the lock file in testdata/submit) and schemas/.
+// lib/ygg-submit/node_modules (ajv, installed from the lock file in assets/submit) and schemas/.
 var (
 	submitOnce sync.Once
 	submitRoot string
@@ -60,12 +63,9 @@ func buildSubmitLayout() (string, error) {
 	if err := writeSchemas(filepath.Join(root, "schemas")); err != nil {
 		return "", err
 	}
-	for _, f := range []string{"package.json", "package-lock.json"} {
-		b, err := os.ReadFile(filepath.Join("testdata", "submit", f))
-		if err != nil {
-			return "", err
-		}
-		if err := os.WriteFile(filepath.Join(lib, f), b, 0o644); err != nil {
+	// The image's own lock file, so the test and the image install the same tree.
+	for f, body := range map[string]string{"package.json": submitPackage, "package-lock.json": submitLock} {
+		if err := os.WriteFile(filepath.Join(lib, f), []byte(body), 0o644); err != nil {
 			return "", err
 		}
 	}
@@ -124,7 +124,12 @@ func (r toolResult) text() string {
 // the answers by id.
 func serve(t *testing.T, dir, contract string, requests ...map[string]any) map[int]rpc {
 	t.Helper()
-	root := submitLayout(t)
+	return serveAt(t, submitLayout(t), dir, contract, requests...)
+}
+
+// serveAt is serve with the image layout at root.
+func serveAt(t *testing.T, root, dir, contract string, requests ...map[string]any) map[int]rpc {
+	t.Helper()
 	var in bytes.Buffer
 	for _, r := range requests {
 		r["jsonrpc"] = "2.0"
@@ -135,10 +140,14 @@ func serve(t *testing.T, dir, contract string, requests ...map[string]any) map[i
 		in.Write(b)
 		in.WriteByte('\n')
 	}
-	cmd := exec.Command(filepath.Join(root, "bin", "ygg-submit"))
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second) // a server that hangs fails the test
+	defer cancel()
+	cmd := exec.CommandContext(ctx, filepath.Join(root, "bin", "ygg-submit"))
+	cmd.WaitDelay = 2 * time.Second
 	cmd.Dir = dir
 	cmd.Env = append(os.Environ(), "YGG_OUTPUT_CONTRACT="+contract)
 	cmd.Stdin = &in
+	cmd.WaitDelay = 2 * time.Second
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	out, err := cmd.Output()
@@ -225,8 +234,19 @@ func TestSubmitAnswersTheProtocol(t *testing.T) {
 	if byName["submit"] == nil || byName["check"] == nil {
 		t.Fatalf("the tools are %v; want submit and check", byName)
 	}
-	if byName["submit"]["oneOf"] == nil || byName["submit"]["type"] != "object" {
-		t.Errorf("submit's input schema = %v; want an object with a oneOf of output and file", byName["submit"])
+	// The Anthropic API refuses a tool whose input schema has a oneOf, anyOf or allOf at its root (R21).
+	for name, sch := range byName {
+		for _, k := range []string{"oneOf", "anyOf", "allOf", "not", "enum"} {
+			if _, ok := sch[k]; ok {
+				t.Errorf("%s's input schema has %s at its root", name, k)
+			}
+		}
+		if sch["type"] != "object" || sch["additionalProperties"] != false {
+			t.Errorf("%s's input schema = %v; want a closed object", name, sch)
+		}
+	}
+	if props, _ := byName["submit"]["properties"].(map[string]any); props["output"] == nil || props["file"] == nil || byName["submit"]["required"] != nil {
+		t.Errorf("submit's input schema = %v; want optional output and file", byName["submit"])
 	}
 	if props, _ := byName["check"]["properties"].(map[string]any); props["file"] == nil || byName["check"]["required"] == nil {
 		t.Errorf("check's input schema = %v; want a required file", byName["check"])
@@ -325,12 +345,20 @@ func TestSubmitReadsOnlyDraftsInTheWorkspace(t *testing.T) {
 	if err := os.Symlink(out, filepath.Join(dir, "outlink")); err != nil {
 		t.Fatal(err)
 	}
+	if err := syscall.Mkfifo(filepath.Join(out, "fifo.json"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(out, "dir.json"), 0o755); err != nil {
+		t.Fatal(err)
+	}
 	refused := []string{"../x.json", "out/../x.json", "/etc/passwd", filepath.Join(out, "ok.json"), "out/link.json", "out/sub/inner.json", "outlink/ok.json",
-		"x.json", "out", "out/missing.json", "out/big.json", "", "out/ok.json/"}
+		"x.json", "out", "out/missing.json", "out/big.json", "", "out/ok.json/", "out/fifo.json", "out/dir.json"}
 	var requests []map[string]any
 	for i, f := range refused {
 		requests = append(requests, call(i*2+1, "submit", map[string]any{"file": f}), call(i*2+2, "check", map[string]any{"file": f}))
 	}
+	pingID := len(refused)*2 + 1 // a FIFO must not hang the server: a later request is still answered
+	requests = append(requests, map[string]any{"id": pingID, "method": "ping"})
 	got := serve(t, dir, "ygg.review/v1", requests...)
 	for i, f := range refused {
 		for _, id := range []int{i*2 + 1, i*2 + 2} {
@@ -338,6 +366,9 @@ func TestSubmitReadsOnlyDraftsInTheWorkspace(t *testing.T) {
 				t.Errorf("file %q (call %d) answered %+v; want a refusal", f, id, r)
 			}
 		}
+	}
+	if got[pingID].Error != nil || string(got[pingID].Result) != "{}" {
+		t.Errorf("the ping after the refusals answered %+v", got[pingID])
 	}
 	// The draft that is fine is read, and nothing is written anywhere.
 	before := listTree(t, dir)
@@ -354,6 +385,32 @@ func TestSubmitReadsOnlyDraftsInTheWorkspace(t *testing.T) {
 		if r := toolOf(t, got[id]); !r.IsError {
 			t.Errorf("call %d answered %+v; want a refusal", id, r)
 		}
+	}
+}
+
+func TestSubmitAnswersWhenItIsBroken(t *testing.T) {
+	// The script with no ajv beside it, as an image that lost its lib would have it.
+	root := t.TempDir()
+	for _, d := range []string{"bin", "schemas"} {
+		if err := os.Mkdir(filepath.Join(root, d), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(root, "bin", "ygg-submit.mjs"), []byte(submitScript), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("ygg-submit.mjs", filepath.Join(root, "bin", "ygg-submit")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := exec.LookPath("node"); err != nil {
+		t.Fatal("node is needed for the sandbox tools' tests")
+	}
+	got := serveAt(t, root, t.TempDir(), "ygg.review/v1", call(1, "submit", map[string]any{"output": map[string]any{}}), map[string]any{"id": 2, "method": "ping"})
+	if r := toolOf(t, got[1]); !r.IsError || !strings.Contains(r.text(), "ygg-submit is broken") {
+		t.Errorf("a submit with no ajv answered %+v; want an error result saying ygg-submit is broken", got[1])
+	}
+	if got[2].Error != nil {
+		t.Errorf("the ping after answered %+v", got[2])
 	}
 }
 
@@ -485,8 +542,16 @@ func TestSubmitAgreesWithGungnir(t *testing.T) {
 				if want == nil && !strings.Contains(r.text(), "accepted") {
 					t.Errorf("accepted, but the text is %q", r.text())
 				}
-				if want != nil && !strings.Contains(r.text(), "/") && !strings.Contains(r.text(), "(document)") {
-					t.Errorf("a refusal with no pointer: %q", r.text())
+				if want != nil {
+					lines := strings.Split(r.text(), "\n")
+					for _, l := range lines[1:] {
+						if !strings.HasPrefix(l, "/") && !strings.HasPrefix(l, "(document)") {
+							t.Errorf("an error line with no pointer: %q", l)
+						}
+					}
+					if len(lines) < 2 {
+						t.Errorf("a refusal that lists no error: %q", r.text())
+					}
 				}
 			})
 		}

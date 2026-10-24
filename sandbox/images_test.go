@@ -39,10 +39,16 @@ func TestTheFactoryLayerIsPinned(t *testing.T) {
 	if strings.Contains(containerfile, "@latest") || strings.Contains(containerfile, "ANTHROPIC_API_KEY") {
 		t.Error("the Containerfile uses a floating version or names an API key")
 	}
-	for _, want := range []string{"ajv@${AJV_VERSION}", "/opt/ygg/lib", "/opt/ygg/bin/ygg-submit", "/opt/ygg/schemas"} {
+	for _, want := range []string{"npm ci --prefix /opt/ygg/lib/ygg-submit", "COPY submit/ ", "/opt/ygg/bin/ygg-submit", "/opt/ygg/schemas"} {
 		if !strings.Contains(containerfile, want) {
 			t.Errorf("the Containerfile lacks %q", want)
 		}
+	}
+}
+
+func TestTheLockFilePinsAjv(t *testing.T) {
+	if !strings.Contains(submitPackage, `"ajv": "`+AjvVersion+`"`) || !strings.Contains(submitLock, `"node_modules/ajv": {`) || !strings.Contains(submitLock, `"version": "`+AjvVersion+`"`) {
+		t.Errorf("the package file or the lock file does not pin ajv %s", AjvVersion)
 	}
 }
 
@@ -64,8 +70,10 @@ func TestTheImageAllowsOnlyOdinsServer(t *testing.T) {
 	if !ms.HooksOnly || !ms.MCPOnly || ms.Bypass != "disable" {
 		t.Errorf("managed settings = %+v; they must block repo hooks and project MCP servers, and bypass mode", ms)
 	}
-	if len(ms.Allowed) != 1 || len(ms.Allowed[0]) != 1 || ms.Allowed[0]["serverName"] != "ygg" {
-		t.Errorf("allowedMcpServers = %v; want exactly [{serverName: ygg}]", ms.Allowed)
+	// By command, not by name: a name admits any command a leaf's .mcp.json gives it (R22).
+	cmd, _ := ms.Allowed[0]["serverCommand"].([]any)
+	if len(ms.Allowed) != 1 || len(ms.Allowed[0]) != 1 || len(cmd) != 1 || cmd[0] != "/opt/ygg/bin/ygg-submit" {
+		t.Errorf("allowedMcpServers = %v; want exactly [{serverCommand: [/opt/ygg/bin/ygg-submit]}]", ms.Allowed)
 	}
 	var keys map[string]any
 	if err := json.Unmarshal([]byte(ManagedSettings()), &keys); err != nil || len(keys) != 4 {
@@ -74,21 +82,29 @@ func TestTheImageAllowsOnlyOdinsServer(t *testing.T) {
 }
 
 func TestTheImageTagFollowsTheSubmitToolAndItsSchemas(t *testing.T) {
-	base := imagesFor(stackImage, submitInputs{script: submitScript, ajv: AjvVersion, schemas: schemaBytes(t)})
+	same := func() submitInputs {
+		return submitInputs{script: submitScript, ajv: AjvVersion, schemas: schemaBytes(t), pkg: submitPackage, lock: submitLock}
+	}
+	base := imagesFor(stackImage, same())
 	if base != ImagesFor(stackImage) {
-		t.Fatal("ImagesFor does not hash the embedded script, the ajv pin and the schemas")
+		t.Fatal("ImagesFor does not hash the embedded script, the ajv pin, the lock file and the schemas")
 	}
-	for name, in := range map[string]submitInputs{
-		"the script":  {script: submitScript + "\n", ajv: AjvVersion, schemas: schemaBytes(t)},
-		"the ajv pin": {script: submitScript, ajv: AjvVersion + "1", schemas: schemaBytes(t)},
-		"a schema":    {script: submitScript, ajv: AjvVersion, schemas: append(schemaBytes(t), "{}"...)},
+	for name, edit := range map[string]func(*submitInputs){
+		"the script":    func(in *submitInputs) { in.script += "\n" },
+		"the ajv pin":   func(in *submitInputs) { in.ajv += "1" },
+		"a schema":      func(in *submitInputs) { in.schemas = append(in.schemas, "{}"...) },
+		"the lock file": func(in *submitInputs) { in.lock += " " },
+		"package.json":  func(in *submitInputs) { in.pkg += " " },
 	} {
-		if imagesFor(stackImage, in) == base {
-			t.Errorf("a changed %s kept the image tags", name)
+		in := same()
+		edit(&in)
+		got := imagesFor(stackImage, in)
+		if got.Work == base.Work {
+			t.Errorf("a changed %s kept the work image's tag", name)
 		}
-	}
-	if imagesFor(stackImage, submitInputs{script: submitScript, ajv: AjvVersion, schemas: schemaBytes(t)}).Firewall != base.Firewall {
-		t.Error("the firewall image should not change with the same inputs")
+		if got.Firewall != base.Firewall {
+			t.Errorf("a changed %s moved the firewall image, which holds none of it", name)
+		}
 	}
 }
 

@@ -46,23 +46,27 @@ func ImagesFor(stack string) Images {
 	if err != nil {
 		panic("the embedded schemas can't be read: " + err.Error()) // an embedded file system failing is a broken build
 	}
-	return imagesFor(stack, submitInputs{script: submitScript, ajv: AjvVersion, schemas: digest})
+	return imagesFor(stack, submitInputs{script: submitScript, ajv: AjvVersion, schemas: digest, pkg: submitPackage, lock: submitLock})
 }
 
 // submitInputs are what the work image carries for ygg-submit: the script, the pin of its validator and the
 // contracts' schemas (as schemaDigest holds them). A change to any of them is a new image.
 type submitInputs struct {
 	script, ajv string
+	pkg, lock   string // package.json and package-lock.json of the validator's tree
 	schemas     []byte
 }
 
 func imagesFor(stack string, submit submitInputs) Images {
 	h := sha256.New()
-	for _, part := range []string{containerfile, managedSettings, NodeImage, ClaudeCode, OpenCode, GitleaksVersion, GitleaksSHA256,
-		submit.script, submit.ajv, string(submit.schemas)} {
+	for _, part := range []string{containerfile, managedSettings, NodeImage, ClaudeCode, OpenCode, GitleaksVersion, GitleaksSHA256} {
 		fmt.Fprintf(h, "%d:%s\n", len(part), part)
 	}
 	fw := hex.EncodeToString(h.Sum(nil))[:12]
+	// The firewall image holds none of ygg-submit, so its tag is fixed above, before the work image's own inputs.
+	for _, part := range []string{submit.script, submit.ajv, submit.pkg, submit.lock, string(submit.schemas)} {
+		fmt.Fprintf(h, "%d:%s\n", len(part), part)
+	}
 	fmt.Fprintf(h, "%d:%s\n", len(stack), stack)
 	return Images{Work: "localhost/ygg-work:" + hex.EncodeToString(h.Sum(nil))[:12], Firewall: "localhost/ygg-fw:" + fw}
 }
@@ -159,6 +163,14 @@ func (d *Driver) build(ctx context.Context, stack string, nodePulled bool) (Imag
 	if err := writeSchemas(filepath.Join(ctxDir, "schemas")); err != nil {
 		return Images{}, err
 	}
+	if err := os.Mkdir(filepath.Join(ctxDir, "submit"), 0o755); err != nil {
+		return Images{}, err
+	}
+	for name, body := range map[string]string{"package.json": submitPackage, "package-lock.json": submitLock} {
+		if err := os.WriteFile(filepath.Join(ctxDir, "submit", name), []byte(body), 0o644); err != nil {
+			return Images{}, err
+		}
+	}
 	for _, base := range []string{NodeImage, stack} {
 		if base == NodeImage && nodePulled {
 			continue
@@ -178,7 +190,7 @@ func (d *Driver) build(ctx context.Context, stack string, nodePulled bool) (Imag
 		return []string{"build", "--pull=never", "--target", target, "-t", tag, "-f", filepath.Join(ctxDir, "Containerfile"),
 			"--build-arg", "NODE_IMAGE=" + NodeImage, "--build-arg", "STACK_IMAGE=" + stack,
 			"--build-arg", "CLAUDE_CODE_VERSION=" + ClaudeCode, "--build-arg", "OPENCODE_VERSION=" + OpenCode,
-			"--build-arg", "GITLEAKS_VERSION=" + GitleaksVersion, "--build-arg", "GITLEAKS_SHA256=" + GitleaksSHA256, "--build-arg", "AJV_VERSION=" + AjvVersion, ctxDir}
+			"--build-arg", "GITLEAKS_VERSION=" + GitleaksVersion, "--build-arg", "GITLEAKS_SHA256=" + GitleaksSHA256, ctxDir}
 	}
 	for _, b := range []struct{ target, tag string }{{"fw", imgs.Firewall}, {"work", imgs.Work}} {
 		if _, err := d.run(ctx, d.Podman, args(b.target, b.tag)...); err != nil {

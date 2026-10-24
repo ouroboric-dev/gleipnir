@@ -23,7 +23,7 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 const TOOLS = [
   {
     name: 'submit',
-    description: 'Hand back your output. Give the output object itself, or the name of a draft file under out/. ' +
+    description: 'Hand back your output. Give exactly one of output (the object itself) or file (a draft file under out/). ' +
       'It answers "accepted", or the errors to fix and submit again. It writes nothing.',
     inputSchema: {
       type: 'object',
@@ -31,7 +31,6 @@ const TOOLS = [
         output: { type: 'object', description: 'The output document, inline.' },
         file: { type: 'string', description: 'A draft under out/, relative to the working directory (at most 4 MiB).' },
       },
-      oneOf: [{ required: ['output'] }, { required: ['file'] }],
       additionalProperties: false,
     },
   },
@@ -150,10 +149,15 @@ function readDraft(file) {
     let st;
     try { st = fs.lstatSync(p); } catch { throw new Refusal(`${file} does not exist`); }
     if (st.isSymbolicLink()) throw new Refusal(`${file} goes through a symbolic link, which is refused`);
+    if (seg === segs[segs.length - 1] && !st.isFile()) throw new Refusal(`${file} is not a regular file`);
   }
   let fd;
   try {
-    fd = fs.openSync(p, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
+    // O_NONBLOCK: a FIFO swapped in after the lstat must not stop the server.
+    fd = fs.openSync(p, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW | fs.constants.O_NONBLOCK);
+    // The opened file must sit under the real out/: a directory swapped for a link after the lstat is caught here.
+    const opened = fs.readlinkSync(`/proc/self/fd/${fd}`);
+    if (!opened.startsWith(path.join(fs.realpathSync(process.cwd()), 'out') + path.sep)) throw new Refusal(`${file} is not under out/`);
     const st = fs.fstatSync(fd);
     if (!st.isFile()) throw new Refusal(`${file} is not a regular file`);
     if (st.size > MAX_FILE) throw new Refusal(`${file} is ${st.size} bytes, over the limit of ${MAX_FILE}`);
@@ -231,9 +235,23 @@ async function handle(line) {
   }
 }
 
+// broken answers a request that hit an internal fault, so that the client is never left waiting: a tool result
+// that says the tool is broken, or a JSON-RPC internal error. A notification gets nothing.
+function broken(line, e) {
+  let req;
+  try { req = JSON.parse(line); } catch { return; }
+  if (req === null || typeof req !== 'object' || req.id === undefined) return;
+  const message = `ygg-submit is broken: ${e?.message ?? e}`;
+  if (req.method === 'tools/call') reply(req.id, { result: { content: [{ type: 'text', text: message }], isError: true } });
+  else fail(req.id, -32603, message);
+}
+
 // One request at a time, in order; the server ends when its input does.
 let queue = Promise.resolve();
 readline.createInterface({ input: process.stdin, crlfDelay: Infinity }).on('line', (line) => {
   if (line.trim() === '') return;
-  queue = queue.then(() => handle(line)).catch((e) => process.stderr.write(`ygg-submit: ${e.stack ?? e}\n`));
+  queue = queue.then(() => handle(line)).catch((e) => {
+    process.stderr.write(`ygg-submit: ${e.stack ?? e}\n`);
+    broken(line, e);
+  });
 });

@@ -23,6 +23,15 @@ var EgressScript string
 //go:embed assets/ygg-submit.mjs
 var submitScript string
 
+// submitPackage and submitLock pin ygg-submit's validator and everything under it. The work image installs
+// them with npm ci, and the tests install the same tree.
+//
+//go:embed assets/submit/package.json
+var submitPackage string
+
+//go:embed assets/submit/package-lock.json
+var submitLock string
+
 // writeSchemas writes every embedded schema of gungnir into dir: the contracts the work image carries at
 // /opt/ygg/schemas, which ygg-submit validates against.
 func writeSchemas(dir string) error {
