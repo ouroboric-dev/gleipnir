@@ -4,8 +4,11 @@
 //   ygg-check-result --check NAME --exit CODE [--timed-out] --duration-ms N --format FORMAT
 //                    [--input FILE]... [--kind KIND --message TEXT]... [--root DIR] [--level LEVEL]
 // The result goes to the file named by $YGG_CHECK_RESULT, written whole through a temp file in the same folder and a
-// rename. The tool exits 0 once it has written the result, and 2, with the reason on stderr and no result, when it
-// cannot read its inputs: the check script then exits non-zero, which is a realm failure and not a finding.
+// rename. The tool exits 0 once it has written the result, and 2, with the reason on stderr and no result, on any error
+// (inputs it cannot read, or a fault of its own): the check script then exits non-zero, which is a realm failure and
+// not a finding. A message
+// is at most 4000 characters, a finding's claim, and the result at most 768 KiB: failures and passed tests are dropped
+// from the end to stay under it, with a note.
 //
 // Formats: go-test-json, go-vet-json, golangci-json, govulncheck-json, osv-json, sqlc-text, oasdiff-json, vitest-json,
 // playwright-json, eslint-json, tsc-text, npm-audit-json, none
@@ -21,7 +24,8 @@ const MAX_INPUT = 64 * 1024 * 1024;
 const MAX_FAILURES = 500;
 const MAX_PASSED = 20000;
 const MAX_NOTES = 200;
-const MAX_MESSAGE = 16384;
+const MAX_MESSAGE = 4000; // gungnir.MaxClaim: a failure's message becomes a finding's claim
+const MAX_DOC = 768 * 1024; // under checks.MaxResult, the most of a result Odin reads
 const MAX_ID = 1000;
 const KINDS = ['test', 'lint', 'type', 'build', 'scan', 'policy', 'other'];
 
@@ -636,8 +640,47 @@ function build(a) {
     out.passed_tests = r.passedTests.slice(0, MAX_PASSED);
     if (r.passedTests.length > MAX_PASSED) notes.push(`${r.passedTests.length} tests passed; the first ${MAX_PASSED} are listed.`);
   }
-  if (notes.length) out.notes = notes.slice(0, MAX_NOTES).map((n) => clip(n, 4096));
-  return out;
+  return fit(out, notes.map((n) => clip(n, 4096)));
+}
+
+const serialize = (doc) => JSON.stringify(doc, null, 2) + '\n';
+
+// fit returns the result with its notes, under MAX_DOC bytes. A result that is over drops failures and passed tests
+// from the end, and says how many in a note: while passed tests wait, failures keep at most half the room, so a
+// broad failure keeps both its first findings and the proof a dispute needs; either list takes what the other leaves.
+function fit(out, notes) {
+  const doc = (ns, k, m) => {
+    const d = { ...out, failures: out.failures.slice(0, k) };
+    if (out.passed_tests) d.passed_tests = out.passed_tests.slice(0, m);
+    if (ns.length) d.notes = ns;
+    return d;
+  };
+  const F = out.failures, P = out.passed_tests ?? [];
+  const whole = doc(notes.slice(0, MAX_NOTES), F.length, P.length);
+  if (Buffer.byteLength(serialize(whole)) <= MAX_DOC) return whole;
+  const kept = notes.slice(0, MAX_NOTES - 1);
+  const at = (k, m) => doc([...kept, `dropped ${F.length - k} failures and ${P.length - m} passed tests to stay under 768 KiB`], k, m);
+  const fits = (k, m) => Buffer.byteLength(serialize(at(k, m))) <= MAX_DOC;
+  // most is how many items of a list fit in n bytes on their own, compact: no more can fit in the document.
+  const most = (list, n) => {
+    let used = 0, i = 0;
+    for (; i < list.length; i++) if ((used += Buffer.byteLength(JSON.stringify(list[i])) + 1) > n) break;
+    return i;
+  };
+  // largest is the largest x in [lo, hi] with ok(x), ok being monotone; lo when none.
+  const largest = (lo, hi, ok) => {
+    while (lo < hi) {
+      const mid = Math.ceil((lo + hi) / 2);
+      if (ok(mid)) lo = mid;
+      else hi = mid - 1;
+    }
+    return lo;
+  };
+  let k = most(F, P.length ? MAX_DOC / 2 : MAX_DOC);
+  if (!fits(k, 0)) k = largest(0, k, (x) => fits(x, 0));
+  const m = largest(0, most(P, MAX_DOC), (y) => fits(k, y));
+  if (m === P.length) k = largest(k, most(F, MAX_DOC), (x) => fits(x, m));
+  return at(k, m);
 }
 
 function main() {
@@ -646,7 +689,7 @@ function main() {
   const doc = build(parseArgs(process.argv.slice(2)));
   const tmp = path.join(path.dirname(dest), `.${path.basename(dest)}.${process.pid}.tmp`);
   try {
-    fs.writeFileSync(tmp, JSON.stringify(doc, null, 2) + '\n', { flag: 'wx', mode: 0o644 });
+    fs.writeFileSync(tmp, serialize(doc), { flag: 'wx', mode: 0o644 });
     fs.renameSync(tmp, dest);
   } catch (e) {
     fs.rmSync(tmp, { force: true });
@@ -654,10 +697,12 @@ function main() {
   }
 }
 
+// Any error is a refusal, a fault of the converter as much as an input it cannot read: exit 2 and one line of
+// reason, never a stack and never a result.
 try {
   main();
 } catch (e) {
-  if (!(e instanceof Refuse)) throw e;
-  process.stderr.write(`ygg-check-result: ${e.message}\n`);
+  const why = e instanceof Error ? e.message : String(e);
+  process.stderr.write(`ygg-check-result: ${why.replace(/\s+/g, ' ')}\n`);
   process.exit(2);
 }

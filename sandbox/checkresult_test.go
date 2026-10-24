@@ -8,9 +8,12 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"regexp"
+	"slices"
 	"strings"
 	"testing"
 
+	"github.com/ouroboric-dev/gungnir"
 	"github.com/ouroboric-dev/gungnir/schema"
 )
 
@@ -418,5 +421,99 @@ func TestTheWebToolsHandleTheirEdgeCases(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// A broad failure must still leave a result Odin reads whole (R29): every message is clipped to a finding's claim,
+// then failures and passed tests are dropped from the end until the document is under 768 KiB, with a note.
+func TestABroadFailureStaysUnderTheReadBound(t *testing.T) {
+	tool := checkResultTool(t)
+	var b strings.Builder
+	line := func(v map[string]string) {
+		j, err := json.Marshal(v)
+		if err != nil {
+			t.Fatal(err)
+		}
+		b.Write(j)
+		b.WriteByte('\n')
+	}
+	failed := func(i int) string { return "TestF" + strings.Repeat("0", 3-len(itoa(i))) + itoa(i) }
+	for i := range 600 {
+		line(map[string]string{"Action": "output", "Package": "p", "Test": failed(i), "Output": "    f_test.go:3: " + strings.Repeat("m", 16<<10) + "\n"})
+		line(map[string]string{"Action": "fail", "Package": "p", "Test": failed(i)})
+	}
+	passed := func(j int) string { return "TestP" + itoa(j) + strings.Repeat("x", 900-5-len(itoa(j))) }
+	for j := range 20000 {
+		line(map[string]string{"Action": "pass", "Package": "p", "Test": passed(j)})
+	}
+	line(map[string]string{"Action": "fail", "Package": "p"})
+	dir := fixture(t, map[string]string{"in": b.String()})
+	got, code, stderr := convert(t, tool, dir, []string{"--check", "unit", "--exit", "1", "--duration-ms", "1", "--format", "go-test-json", "--input", "in"})
+	if code != 0 {
+		t.Fatalf("exit %d: %s", code, stderr)
+	}
+	if len(got) >= 768<<10 {
+		t.Errorf("the result is %d bytes, not under 768 KiB", len(got))
+	}
+	r := decodeResult(t, got)
+	if len(r.Failures) == 0 || len(r.PassedTests) == 0 {
+		t.Fatalf("%d failures and %d passed tests kept; want some of each", len(r.Failures), len(r.PassedTests))
+	}
+	for i, f := range r.Failures {
+		if f.Test != "p."+failed(i) || len([]rune(f.Message)) > gungnir.MaxClaim {
+			t.Fatalf("failure %d is %s with a %d-character message; want p.%s, at most %d", i, f.Test, len([]rune(f.Message)), failed(i), gungnir.MaxClaim)
+		}
+	}
+	for j, id := range r.PassedTests {
+		if id != "p."+passed(j) {
+			t.Fatalf("passed test %d is %.20s…; want the first ones in order", j, id)
+		}
+	}
+	t.Logf("kept %d failures and %d passed tests in %d bytes", len(r.Failures), len(r.PassedTests), len(got))
+	want := "dropped " + itoa(500-len(r.Failures)) + " failures and " + itoa(20000-len(r.PassedTests)) + " passed tests to stay under 768 KiB"
+	if !slices.Contains(r.Notes, want) {
+		t.Errorf("notes = %q; want %q", r.Notes, want)
+	}
+}
+
+// Any fault of the converter is a refusal: exit 2 and a reason, never a stack trace and never a result.
+func TestAFaultOfTheConverterIsARefusal(t *testing.T) {
+	tool := checkResultTool(t)
+	dir := fixture(t, map[string]string{"in": `{"suites":[{"title":"a.spec.ts","specs":5}],"errors":[]}`})
+	got, code, stderr := convert(t, tool, dir, []string{"--check", "e2e", "--exit", "1", "--duration-ms", "1", "--format", "playwright-json", "--input", "in"})
+	if code != 2 || got != nil || !strings.HasPrefix(stderr, "ygg-check-result: ") || strings.Contains(stderr, "    at ") || strings.Count(strings.TrimSpace(stderr), "\n") != 0 {
+		t.Errorf("exit %d, result %q, stderr %q; want exit 2, no result, one line of reason", code, got, stderr)
+	}
+}
+
+// The two tools of the work image load only node's file, path, line and URL modules and ajv from the image, and
+// name nothing that reaches a network or starts a process.
+func TestTheSandboxToolsLoadNothingElse(t *testing.T) {
+	allowed := []string{"node:fs", "node:path", "node:readline", "node:url", "node:crypto"}
+	static := regexp.MustCompile(`(?m)^\s*import\s[^'"]*?from\s+['"]([^'"]+)['"]|^\s*import\s+['"]([^'"]+)['"]`)
+	for name, src := range map[string]string{"ygg-submit.mjs": submitScript, "ygg-check-result.mjs": checkResultScript} {
+		ms := static.FindAllStringSubmatch(src, -1)
+		if len(ms) == 0 {
+			t.Errorf("%s: no import found", name)
+		}
+		for _, m := range ms {
+			if mod := m[1] + m[2]; !slices.Contains(allowed, mod) {
+				t.Errorf("%s imports %s", name, mod)
+			}
+		}
+		dynamic := regexp.MustCompile(`\bimport\s*\(([^\n]*)`).FindAllStringSubmatch(src, -1)
+		for _, d := range dynamic {
+			if name != "ygg-submit.mjs" || !strings.HasPrefix(d[1], `pathToFileURL(path.join(here, '..', 'lib', 'ygg-submit', 'node_modules', 'ajv', 'dist', '2020.js'))`) {
+				t.Errorf("%s imports %s", name, d[0])
+			}
+		}
+		if name == "ygg-submit.mjs" && len(dynamic) != 1 {
+			t.Errorf("%s has %d dynamic imports; want the one of ajv", name, len(dynamic))
+		}
+		for _, bad := range []string{"fetch", "child_process", "node:net", "node:http", "node:https", "node:dgram", "node:dns", "WebSocket", "require("} {
+			if strings.Contains(src, bad) {
+				t.Errorf("%s mentions %s", name, bad)
+			}
+		}
 	}
 }

@@ -6,9 +6,11 @@ import (
 	"context"
 	"encoding/json"
 	"io/fs"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -557,4 +559,39 @@ func TestSubmitAgreesWithGungnir(t *testing.T) {
 		}
 	}
 	t.Logf("compared %d fixtures of gungnir and %d parity cases", counts[dirs[0]], counts[dirs[1]])
+}
+
+// ygg-submit knows exactly gungnir's contracts, each by its own id: a version it does not know, or a schema that is
+// no contract (graph.yaml's), is refused, never checked against a schema of the same name.
+func TestSubmitKnowsExactlyGungnirsContracts(t *testing.T) {
+	block := regexp.MustCompile(`(?s)const CONTRACTS = \{(.*?)\};`).FindStringSubmatch(submitScript)
+	if block == nil {
+		t.Fatal("ygg-submit.mjs has no CONTRACTS table")
+	}
+	listed := map[string]string{}
+	for _, m := range regexp.MustCompile(`'([^']+)':\s*'([^']+)'`).FindAllStringSubmatch(block[1], -1) {
+		listed[m[1]] = m[2]
+	}
+	want := map[string]string{}
+	for _, c := range schema.Contracts() {
+		file, ok := c.SchemaFile()
+		if !ok {
+			t.Fatalf("gungnir has no schema for %s", c)
+		}
+		want[string(c)] = file
+	}
+	if !maps.Equal(listed, want) {
+		t.Errorf("ygg-submit's contracts = %v; want schema.Contracts() %v", listed, want)
+	}
+	dir := t.TempDir()
+	for _, c := range []string{"ygg.review/v2", "ygg.graph/v1", "ygg.review/v1x", "ygg.review", ""} {
+		if r := verdict(t, dir, c, []byte(goodReview)); !r.IsError || !strings.Contains(r.text(), "is not a contract this session can submit") {
+			t.Errorf("contract %q answered %+v; want a refusal", c, r)
+		}
+	}
+	for _, c := range schema.Contracts() {
+		if r := verdict(t, dir, string(c), []byte(`{}`)); strings.Contains(r.text(), "is not a contract") {
+			t.Errorf("contract %s answered %+v; want it known", c, r)
+		}
+	}
 }

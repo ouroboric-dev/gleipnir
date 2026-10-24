@@ -45,8 +45,9 @@ The harness: agent adapters, the devcontainer sandbox driver, policies and the c
   which a caller sets as `Config.Images`. `BuildFactory` builds both, pulling the Node image once.
 - Carries `ygg-submit` in the work image: a stdio MCP server (`ygg`, protocol 2025-06-18) through which a session
   hands back its typed output. Its `submit` tool takes the output or a draft file under `out/` and its `check` tool
-  takes a draft; both validate against the contract in `$YGG_OUTPUT_CONTRACT` with ajv 8.17.1 and the schemas of
-  gungnir's `schema.SchemaFS()`, answer `accepted` or the errors, and write nothing. The managed settings allow
+  takes a draft; both validate against the contract in `$YGG_OUTPUT_CONTRACT` (one of gungnir's `schema.Contracts()`,
+  by its exact id; any other is refused) with ajv 8.17.1 and the schemas of gungnir's `schema.SchemaFS()`, answer
+  `accepted` or the errors, and write nothing. The managed settings allow
   exactly that one MCP server, by command (`serverCommand: ["/opt/ygg/bin/ygg-submit"]`), because a name would admit any
   command a leaf's `.mcp.json` gave it. An adapter must start exactly `/opt/ygg/bin/ygg-submit` with no arguments and
   pass the contract in `YGG_OUTPUT_CONTRACT`. The ajv tree comes from a lock file (`npm ci`), and the image tag hashes
@@ -76,7 +77,10 @@ The harness: agent adapters, the devcontainer sandbox driver, policies and the c
   returns an error and no result. `Grade` reads no score: the line the suite prints on stdout is the score, and
   Odin reads it. `GraderLeftovers` finds a container a killed run left, by its label, and `RemoveGrader`
   removes it.
-- Runs checks.
+- Runs checks. A check asked for its typed result (`checks.Spec.Typed`, the loop's ladder) gets
+  `$YGG_CHECK_RESULT` and has its `ygg.check/v1` read back, guarded and bounded; any other command runs alone, with no
+  environment of its own. `ygg-check-result`, in the work image, writes that result from a tool's machine output and
+  keeps it under 768 KiB.
 
 ## Depends on
 

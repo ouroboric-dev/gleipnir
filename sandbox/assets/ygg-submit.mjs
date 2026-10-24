@@ -20,6 +20,23 @@ const MAX_ERRORS = 50;
 const SCHEMA_BASE = 'https://github.com/ouroboric-dev/gungnir/schema/';
 const here = path.dirname(fileURLToPath(import.meta.url));
 
+// The contracts a session can submit and their schema files: gungnir's schema.Contracts(), each by its exact id (a
+// test keeps the two equal). Another version, or a schema that is no contract, is refused.
+const CONTRACTS = {
+  'ygg.design/v1': 'design.schema.json',
+  'ygg.spec/v1': 'spec.schema.json',
+  'ygg.conformance/v1': 'conformance.schema.json',
+  'ygg.plan/v1': 'plan.schema.json',
+  'ygg.reuse-review/v1': 'reuse-review.schema.json',
+  'ygg.review/v1': 'review.schema.json',
+  'ygg.implement/v1': 'implement.schema.json',
+  'ygg.check/v1': 'check.schema.json',
+  'ygg.retro/v1': 'retro.schema.json',
+  'ygg.decisions/v1': 'decisions.schema.json',
+  'ygg.judgement/v1': 'judgement.schema.json',
+  'ygg.run-record/v1': 'run-record.schema.json',
+};
+
 const TOOLS = [
   {
     name: 'submit',
@@ -63,8 +80,7 @@ async function load() {
     ajv.addSchema(JSON.parse(fs.readFileSync(path.join(dir, name), 'utf8')));
   }
   return (contract) => {
-    const m = /^ygg\.([a-z][a-z0-9-]*)\/v[0-9]+$/.exec(contract);
-    const v = m && ajv.getSchema(`${SCHEMA_BASE}${m[1]}.schema.json`);
+    const v = Object.hasOwn(CONTRACTS, contract) && ajv.getSchema(`${SCHEMA_BASE}${CONTRACTS[contract]}`);
     if (!v) throw new Refusal(`${contract || '(unset)'} is not a contract this session can submit`);
     return v;
   };
