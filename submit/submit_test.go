@@ -1,11 +1,17 @@
 package submit
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"io"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
+	"time"
 
 	"github.com/ouroboric-dev/gungnir"
 )
@@ -53,7 +59,7 @@ func TestADocumentIsTheOutputWholeOrTheDraftFile(t *testing.T) {
 	if err != nil || string(doc) != `{"tasks":[]}` {
 		t.Fatalf("file: %q, %v", doc, err)
 	}
-	if len(r.got) != 1 || strings.Join(r.got[0].Argv, " ") != "head -c 4194305 -- out/plan.json" || r.got[0].Dir != "" {
+	if len(r.got) != 1 || !isGuardedRead(r.got[0].Argv, "out/plan.json") || r.got[0].Dir != "" {
 		t.Errorf("the read = %+v", r.got)
 	}
 }
@@ -93,4 +99,63 @@ func mustJSON(v any) json.RawMessage {
 		panic(err)
 	}
 	return b
+}
+
+// isGuardedRead tells the guarded read of p: a shell script that gets the path as $1, never in the script text.
+func isGuardedRead(argv []string, p string) bool {
+	return len(argv) == 5 && argv[0] == "sh" && argv[1] == "-c" && strings.Contains(argv[2], "realpath") &&
+		strings.Contains(argv[2], "test -f") && strings.Contains(argv[2], "head -c 4194305") && !strings.Contains(argv[2], p) &&
+		argv[3] == "sh" && argv[4] == p
+}
+
+// local runs the command on this machine, in dir: the guard is a shell script, so its test runs it.
+type local struct{ dir string }
+
+func (l local) Run(ctx context.Context, c gungnir.Cmd) (gungnir.ExecResult, error) {
+	cmd := exec.CommandContext(ctx, c.Argv[0], c.Argv[1:]...)
+	cmd.Dir, cmd.Stdout = l.dir, c.Stdout
+	err := cmd.Run()
+	if ee, ok := err.(*exec.ExitError); ok {
+		return gungnir.ExecResult{ExitCode: ee.ExitCode()}, nil
+	}
+	return gungnir.ExecResult{}, err
+}
+
+func TestTheDraftReadRefusesSymlinksAndFIFOsAndReadsAFile(t *testing.T) {
+	root := t.TempDir()
+	outside := filepath.Join(t.TempDir(), "secret.json")
+	must := func(err error) {
+		t.Helper()
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	must(os.Mkdir(filepath.Join(root, "out"), 0o755))
+	must(os.WriteFile(outside, []byte(`{"secret":true}`), 0o644))
+	must(os.WriteFile(filepath.Join(root, "out", "ok.json"), []byte(`{"ok":true}`), 0o644))
+	must(os.Symlink(outside, filepath.Join(root, "out", "link.json")))
+	must(os.Symlink(filepath.Join(root, "out", "ok.json"), filepath.Join(root, "out", "inside.json")))
+	must(syscall.Mkfifo(filepath.Join(root, "out", "pipe.json"), 0o644))
+	must(os.Mkdir(filepath.Join(root, "out", "sub"), 0o755))
+	must(os.Symlink(t.TempDir(), filepath.Join(root, "out", "dir")))
+	r := local{dir: root}
+	read := func(name string) ([]byte, error) {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		return Document(ctx, r, mustJSON(map[string]string{"file": name}))
+	}
+	if doc, err := read("out/ok.json"); err != nil || !bytes.Equal(doc, []byte(`{"ok":true}`)) {
+		t.Errorf("a plain file: %q, %v", doc, err)
+	}
+	if doc, err := read("out/inside.json"); err != nil || !bytes.Equal(doc, []byte(`{"ok":true}`)) {
+		t.Errorf("a symlink that stays under out/: %q, %v", doc, err)
+	}
+	for _, name := range []string{"out/link.json", "out/pipe.json", "out/sub", "out/missing.json"} {
+		if doc, err := read(name); err == nil {
+			t.Errorf("%s was read: %q", name, doc)
+		}
+	}
+	if doc, err := read("out/dir/x.json"); err == nil {
+		t.Errorf("a path through a symlinked folder was read: %q", doc)
+	}
 }

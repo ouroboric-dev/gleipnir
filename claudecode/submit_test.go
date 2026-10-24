@@ -27,7 +27,7 @@ type session struct {
 }
 
 func (s *session) Run(_ context.Context, c gungnir.Cmd) (gungnir.ExecResult, error) {
-	if c.Argv[0] == "head" {
+	if c.Argv[0] == "sh" {
 		s.reads = append(s.reads, c.Argv)
 		body, ok := s.files[c.Argv[len(c.Argv)-1]]
 		if !ok {
@@ -106,7 +106,7 @@ func TestASubmitNamingAFileIsReadThroughTheSandbox(t *testing.T) {
 	if string(r.Submitted) != "{\"findings\": []}\n" {
 		t.Errorf("Submitted = %q, want the file's bytes", r.Submitted)
 	}
-	if len(s.reads) != 1 || strings.Join(s.reads[0], " ") != "head -c 4194305 -- out/review.json" {
+	if len(s.reads) != 1 || !guardedRead(s.reads[0], "out/review.json") {
 		t.Errorf("reads = %v; want one bounded read of the submitted file, none of the checked draft", s.reads)
 	}
 }
@@ -219,4 +219,9 @@ func TestTheAdapterSubmits(t *testing.T) {
 	if s, ok := a.(gungnir.Submitter); !ok || !s.Submits() {
 		t.Error("the claude-code adapter does not say it submits")
 	}
+}
+
+// guardedRead tells the submit package's guarded read of p: a shell script with the path as its $1.
+func guardedRead(argv []string, p string) bool {
+	return len(argv) == 5 && argv[0] == "sh" && argv[1] == "-c" && strings.Contains(argv[2], "realpath") && argv[3] == "sh" && argv[4] == p
 }

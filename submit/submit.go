@@ -118,14 +118,19 @@ func Path(file string) (string, error) {
 	return path.Join(segs...), nil
 }
 
-// read runs a bounded read of the file in the session's sandbox: one byte more than the limit, to tell a file at the
-// limit from one over it.
+// guardedRead is the script of the read: the path (its $1) must resolve to a regular file under out/ of the working
+// directory, so a symlink out of out/ is not followed and a FIFO or a device is not opened. The read itself is bounded
+// at one byte more than the limit, to tell a file at the limit from one over it.
+var guardedRead = `r=$(realpath -e -- "$1") && b=$(realpath .) && case "$r" in "$b"/out/*) ;; *) exit 3;; esac && ` +
+	`test -f "$r" && exec head -c ` + strconv.Itoa(MaxFile+1) + ` -- "$r"`
+
+// read runs the guarded, bounded read of the file in the session's sandbox.
 func read(ctx context.Context, r gungnir.Runner, p string) ([]byte, error) {
 	if r == nil {
 		return nil, fmt.Errorf("the submitted draft %s can't be read: the session has no sandbox", p)
 	}
 	buf := bounded.NewBuffer(MaxFile + 1)
-	res, err := r.Run(ctx, gungnir.Cmd{Argv: []string{"head", "-c", strconv.Itoa(MaxFile + 1), "--", p}, Stdout: buf})
+	res, err := r.Run(ctx, gungnir.Cmd{Argv: []string{"sh", "-c", guardedRead, "sh", p}, Stdout: buf})
 	switch {
 	case err != nil:
 		return nil, fmt.Errorf("the submitted draft %s can't be read: %w", p, err)
