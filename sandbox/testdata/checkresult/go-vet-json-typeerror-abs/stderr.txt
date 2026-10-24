@@ -1,0 +1,4 @@
+# example.com/app/internal/store
+vet: /work/internal/store/store.go:4:9: undefined: undefinedThing
+# example.com/app/internal/api
+/work/internal/api/server.go:12:5: cannot use "five" (untyped string constant) as int value in return statement

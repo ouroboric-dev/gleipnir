@@ -1,0 +1,10 @@
+{
+  "check": "go-static-vet",
+  "passed": false,
+  "exit_code": 1,
+  "timed_out": false,
+  "duration_ms": 800,
+  "failures": [
+    {"kind": "type", "location": "internal/store/store.go:4:9", "message": "undefined: undefinedThing"}
+  ]
+}

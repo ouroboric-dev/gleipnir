@@ -215,10 +215,26 @@ function goTestJSON(inputs, ctx) {
 }
 
 // go vet -json: {"pkg": {"analyzer": [{"posn": "file:line:col", "message": "..."}]}}, one object per package; an
-// analyzer may carry {"error": "..."} instead.
-function goVetJSON(inputs) {
+// analyzer may carry {"error": "..."} instead. Locations are made relative to --root, like the web formats.
+//
+// Up to two inputs, told apart by content: an input is vet's stdout (JSON) when its first line that is not blank
+// and not a "# package" header starts with { or [, or when it holds nothing else; any other input is vet's stderr
+// text. On a type error vet prints no JSON, only "# package" headers and "vet: file:line:col: message" lines on
+// stderr, and exits 1. Each such line (the "vet: " prefix is optional) is a failure of kind "type" with its location
+// made relative to --root; headers and any other line are ignored.
+const vetPosn = /^(?:vet: )?(\S.*?):(\d+):(\d+): (\S.*)$/;
+function goVetJSON(inputs, ctx) {
   const failures = [];
+  const rel = (f) => relPath(f, ctx.root).replace(/^\.\//, '');
   for (const { name, text } of inputs) {
+    const body = text.split('\n').filter((l) => !l.startsWith('#')).join('\n').trimStart();
+    if (body !== '' && body[0] !== '{' && body[0] !== '[') {
+      for (const l of text.split('\n')) {
+        const m = l.replace(/\r$/, '').match(vetPosn);
+        if (m) failures.push(failure('type', m[4], { loc: location(rel(m[1]), +m[2], +m[3]) }));
+      }
+      continue;
+    }
     for (const v of jsonValues(text, name)) {
       need(isObj(v), `${name}: a go vet -json value is not an object`);
       for (const [pkg, analyzers] of Object.entries(v)) {
@@ -232,7 +248,7 @@ function goVetJSON(inputs) {
           for (const d of found) {
             need(isObj(d) && typeof d.message === 'string', `${name}: a ${analyzer} finding has no message`);
             const m = typeof d.posn === 'string' && d.posn.match(/^(.+):(\d+):(\d+)$/);
-            failures.push(failure('lint', `${analyzer}: ${d.message}`, { loc: m ? location(m[1], +m[2], +m[3]) : undefined }));
+            failures.push(failure('lint', `${analyzer}: ${d.message}`, { loc: m ? location(rel(m[1]), +m[2], +m[3]) : undefined }));
           }
         }
       }
