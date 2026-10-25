@@ -18,7 +18,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -239,8 +238,6 @@ func TestSandboxDriverOnARealEngine(t *testing.T) {
 		}
 	}
 }
-
-func itoa(n int) string { return strconv.Itoa(n) }
 
 func asFound(err error, target **scan.FoundError) bool {
 	fe, ok := err.(*scan.FoundError)
