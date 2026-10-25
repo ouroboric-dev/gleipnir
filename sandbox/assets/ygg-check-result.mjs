@@ -1,4 +1,4 @@
-#!/usr/bin/env node
+#!/opt/ygg/bin/node
 // ygg-check-result: converts one check tool's machine output into the factory's typed result, ygg.check/v1 (change
 // typed-boundaries, design section 4). A realm's check script runs its tool, keeps the exit code, and calls
 //   ygg-check-result --check NAME --exit CODE [--timed-out] --duration-ms N --format FORMAT

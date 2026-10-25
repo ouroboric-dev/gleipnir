@@ -144,7 +144,7 @@ func serveAt(t *testing.T, root, dir, contract string, requests ...map[string]an
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second) // a server that hangs fails the test
 	defer cancel()
-	cmd := exec.CommandContext(ctx, filepath.Join(root, "bin", "ygg-submit"))
+	cmd := exec.CommandContext(ctx, "node", filepath.Join(root, "bin", "ygg-submit")) // not the script itself: its first line names the image's node
 	cmd.WaitDelay = 2 * time.Second
 	cmd.Dir = dir
 	cmd.Env = append(os.Environ(), "YGG_OUTPUT_CONTRACT="+contract)
