@@ -19,6 +19,12 @@ The harness: agent adapters, the devcontainer sandbox driver, policies and the c
   deepseek-v4-flash took its prompt for an empty message in that state (v0-H17). Another value is an error from
   `New` and `ConfigJSON`. The `claude-code` and `scripted` adapters ignore the setting. Whether OpenRouter rejects
   `low` or `medium` for a model that does not support them is unverified.
+- The `opencode` adapter runs a local model (`local/<name>`, local-models spec §3.8) when `Config.Local` names
+  the model server (`BaseURL`, `Context`, `Output`) and `Config.Price` is above 0 for input and output. The
+  session names one provider, `LocalProvider` (`local`), speaking the OpenAI-compatible protocol to the server,
+  with no API key: it needs no `OPENROUTER_API_KEY`, and `Result.Provider` is `local`. Its cost is the tokens
+  times the price, marked estimated. A reasoning effort is refused, because the model list sets it. Privacy
+  `strict` is accepted with the same configuration as `standard`: the model sends nothing outside the machine.
 - Hands a session's typed output back (change typed-boundaries). A task with `Output` set gets one MCP server,
   `ygg`: Claude Code through `--mcp-config` (with `--strict-mcp-config` kept, so a leaf's `.mcp.json` is never
   read), opencode through the `mcp` key of its configuration (with project configuration switched off). Both start
@@ -37,15 +43,16 @@ The harness: agent adapters, the devcontainer sandbox driver, policies and the c
   consumes ask for (a database, object storage), and opens their ports, and only theirs, to the work
   container through the firewall. The firewall also answers the work container's DNS queries itself, from
   the addresses it allows, so a name served from a large pool never resolves to an address the rules do
-  not allow; it resolves nothing but the allowed hosts and the services' names. The services sit on an internal network with no route out, which the
-  firewall joins, so none of them can reach the internet for a client. A spec with `Models` names a shared model
-  server: the firewall alone joins the server's network (`models`, external), which `Up` refuses unless
-  `podman network inspect` says it is internal, and opens the server's name on its one port, as it does a
-  service's. Validate refuses any other external or named network. Each sandbox starts on the stack layer its spec names, so leaves of
-  different realms differ. A scratch sandbox holds one folder and no git directory: a planner's
-  workspace (spec §3.3). A sandbox with no stack (a spec with no `Stack`, as a scratch session's) runs on Gleipnir's
-  factory stack, the pinned Node image plus git (`FactoryStack`), under the factory layer: `FactoryImages()`,
-  which a caller sets as `Config.Images`. `BuildFactory` builds both, pulling the Node image once.
+  not allow; it resolves nothing but the allowed hosts and the services' names. The services sit on an internal
+  network with no route out, which the firewall joins, so none of them can reach the internet for a client. A spec
+  with `Models` names a shared model server: the firewall alone joins the server's network (`models`, external),
+  which `Up` refuses unless `podman network inspect` says it is internal, and opens the server's name on its one
+  port, as it does a service's. Validate refuses any other external or named network. Each sandbox starts on the
+  stack layer its spec names, so leaves of different realms differ. A scratch sandbox holds one folder and no git
+  directory: a planner's workspace (spec §3.3). A sandbox with no stack (a spec with no `Stack`, as a scratch
+  session's) runs on Gleipnir's factory stack, the pinned Node image plus git (`FactoryStack`), under the factory
+  layer: `FactoryImages()`, which a caller sets as `Config.Images`. `BuildFactory` builds both, pulling the Node
+  image once.
 - Carries `ygg-submit` in the work image: a stdio MCP server (`ygg`, protocol 2025-06-18) through which a session
   hands back its typed output. Its `submit` tool takes the output or a draft file under `out/` and its `check` tool
   takes a draft; both validate against the contract in `$YGG_OUTPUT_CONTRACT` (one of gungnir's `schema.Contracts()`,
