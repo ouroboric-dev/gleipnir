@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -217,5 +218,35 @@ func TestTheFactoryStackTagFollowsItsFileAndTheNodeImage(t *testing.T) {
 	}
 	if FactoryImages().Work == ImagesFor(NodeImage).Work {
 		t.Error("the factory images are still on the bare Node image")
+	}
+}
+
+// The two tools name their interpreter by the path the image installs it at, so a check script that fixes its own PATH
+// (helheim-go's does, to keep an agent's go from coming first) still runs them. The Containerfile, the two first lines
+// and the links must agree.
+func TestTheToolsNameTheNodeTheImageInstalls(t *testing.T) {
+	m := regexp.MustCompile(`cp /usr/local/bin/node (/opt/ygg/bin/node)\b`).FindStringSubmatch(containerfile)
+	if m == nil {
+		t.Fatal("the Containerfile does not copy node to a path under /opt/ygg/bin")
+	}
+	want := "#!" + m[1]
+	for name, src := range map[string]string{"ygg-submit.mjs": submitScript, "ygg-check-result.mjs": checkResultScript} {
+		if first, _, _ := strings.Cut(src, "\n"); first != want {
+			t.Errorf("%s starts with %q, want %q", name, first, want)
+		}
+	}
+	// The tools stage installs node and both tools under /opt/ygg/bin, and the work stage takes all of /opt/ygg.
+	if !strings.Contains(containerfile, "COPY --from=tools /opt/ygg /opt/ygg") {
+		t.Error("the work stage does not copy /opt/ygg from the tools stage")
+	}
+	for _, tool := range []string{"ygg-submit", "ygg-check-result"} {
+		for _, want := range []string{
+			"COPY " + tool + ".mjs /opt/ygg/bin/" + tool + ".mjs",
+			"ln -s " + tool + ".mjs /opt/ygg/bin/" + tool,
+		} {
+			if !strings.Contains(containerfile, want) {
+				t.Errorf("the Containerfile lacks %q, so the name %s does not resolve to the script", want, tool)
+			}
+		}
 	}
 }

@@ -39,7 +39,7 @@ func checkResultTool(t *testing.T) string {
 func convert(t *testing.T, tool, dir string, args []string) (result []byte, code int, stderr string) {
 	t.Helper()
 	out := filepath.Join(t.TempDir(), "check.json")
-	cmd := exec.Command(tool, args...)
+	cmd := exec.Command("node", append([]string{tool}, args...)...) // not the script itself: its first line names the image's node
 	cmd.Dir = dir
 	cmd.Env = append(os.Environ(), "YGG_CHECK_RESULT="+out)
 	var errb bytes.Buffer
@@ -261,7 +261,7 @@ func TestTheConverterRefusesWhatItCannotRead(t *testing.T) {
 		})
 	}
 	t.Run("no output path", func(t *testing.T) {
-		cmd := exec.Command(tool, append(append([]string{}, good...), "--input", "in")...)
+		cmd := exec.Command("node", append(append([]string{tool}, good...), "--input", "in")...)
 		cmd.Dir = dir
 		cmd.Env = []string{"PATH=" + os.Getenv("PATH")}
 		var errb bytes.Buffer
@@ -515,5 +515,47 @@ func TestTheSandboxToolsLoadNothingElse(t *testing.T) {
 				t.Errorf("%s mentions %s", name, bad)
 			}
 		}
+	}
+}
+
+// The converter needs nothing from PATH beyond its interpreter: run with an empty environment but for a PATH of the
+// system directories, through the node this machine has, it finds no other tool to look up.
+func TestTheConverterNeedsNothingFromPathButItsInterpreter(t *testing.T) {
+	node, err := exec.LookPath("node")
+	if err != nil {
+		t.Fatal("node is needed for the sandbox tools' tests")
+	}
+	env, err := exec.LookPath("env")
+	if err != nil {
+		t.Fatal(err)
+	}
+	tool := checkResultTool(t)
+	dir := filepath.Join("testdata", "checkresult", "go-test-json-fail")
+	out := filepath.Join(t.TempDir(), "check.json")
+	args := append([]string{"-i", "PATH=/usr/bin:/bin", "YGG_CHECK_RESULT=" + out, node, tool}, caseArgs(t, dir)...)
+	cmd := exec.Command(env, args...)
+	cmd.Dir = dir
+	var errb bytes.Buffer
+	cmd.Stderr = &errb
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("the converter under a stripped environment: %v\n%s", err, errb.String())
+	}
+	got, err := os.ReadFile(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want, err := os.ReadFile(filepath.Join(dir, "expected.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var g, w any
+	if err := json.Unmarshal(got, &g); err != nil {
+		t.Fatalf("%v\n%s", err, got)
+	}
+	if err := json.Unmarshal(want, &w); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(g, w) {
+		t.Errorf("result under a stripped environment:\n%s\nwant:\n%s", got, want)
 	}
 }

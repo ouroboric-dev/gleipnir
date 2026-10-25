@@ -1,4 +1,4 @@
-#!/usr/bin/env node
+#!/opt/ygg/bin/node
 // ygg-submit: the stdio MCP server through which a session hands back its typed output (change typed-boundaries,
 // design section 3). The agent CLI starts it as a child process inside the work container, with the agent's own
 // rights and no network. It offers two tools:
