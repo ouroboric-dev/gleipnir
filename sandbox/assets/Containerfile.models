@@ -9,7 +9,7 @@
 # The image is built on the host that runs it (ygg models build), so the CPU code is native to that host.
 ARG CUDA_DEVEL_IMAGE=docker.io/nvidia/cuda:12.9.1-devel-ubuntu22.04@sha256:bd4e2680a261c212f1e2fea241606f71497dc67a417f73175d794ec8212b5ba8
 ARG CUDA_RUNTIME_IMAGE=docker.io/nvidia/cuda:12.9.1-runtime-ubuntu22.04@sha256:d90541b92124899904e0860a4ac1955606b3bc45ad6cc9dab16567fd1111e326
-ARG GO_IMAGE=docker.io/library/golang:1.26.7-bookworm@sha256:e8c859f5632dcfde7b32d2012b4351728f6437930887c2f6a91ea242459e5514
+ARG GO_IMAGE=docker.io/library/golang:1.26.10-bookworm@sha256:632dff7351799a5a9954a48dc06670ade72ee44e8c351cdc0e5a57af2fea21af
 
 FROM ${CUDA_DEVEL_IMAGE} AS llama
 ARG CUDA_ARCH=89
