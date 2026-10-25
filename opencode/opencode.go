@@ -110,6 +110,9 @@ func New(model string, cfg Config) (*Agent, error) {
 	if name, ok := schema.LocalModel(model); ok {
 		return newLocal(name, cfg)
 	}
+	if strings.HasPrefix(model, "local/") {
+		return nil, fmt.Errorf("opencode: model %q is not local/<name> with a name of 1 to 64 characters from a-z, 0-9, '.', '_' and '-', starting with a letter or digit", model)
+	}
 	id, ok := strings.CutPrefix(model, "openrouter/")
 	if !ok || id == "" {
 		return nil, fmt.Errorf("opencode: model %q must be openrouter/<model>: v0 runs opencode on OpenRouter only", model)
@@ -133,8 +136,8 @@ func newLocal(name string, cfg Config) (*Agent, error) {
 		return nil, fmt.Errorf("opencode: model local/%s needs the model server's base URL", name)
 	case cfg.Local.Context <= 0 || cfg.Local.Output <= 0:
 		return nil, fmt.Errorf("opencode: model local/%s needs a context size and an output limit", name)
-	case cfg.Price == nil:
-		return nil, fmt.Errorf("opencode: model local/%s needs a price, so the caps can count dollars", name)
+	case cfg.Price == nil || cfg.Price.Input <= 0 || cfg.Price.Output <= 0:
+		return nil, fmt.Errorf("opencode: model local/%s needs a price above 0 for input and output, so the caps can count dollars", name)
 	}
 	// A local model sends nothing outside the machine, so it meets privacy: strict with the same configuration.
 	switch cfg.Privacy {

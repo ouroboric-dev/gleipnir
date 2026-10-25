@@ -116,20 +116,35 @@ func TestLocalSessionCostsTheListPrice(t *testing.T) {
 func TestLocalNeedsAPriceAndAServer(t *testing.T) {
 	price, srv := &Price{Input: 1, Output: 1}, &Local{BaseURL: "http://m:1/v1", Context: 1000, Output: 100}
 	for name, cfg := range map[string]Config{
-		"no price":  {Local: srv},
-		"no server": {Price: price},
-		"no url":    {Price: price, Local: &Local{Context: 1000, Output: 100}},
-		"no limits": {Price: price, Local: &Local{BaseURL: "http://m:1/v1"}},
+		"no price":        {Local: srv},
+		"no server":       {Price: price},
+		"no url":          {Price: price, Local: &Local{Context: 1000, Output: 100}},
+		"no limits":       {Price: price, Local: &Local{BaseURL: "http://m:1/v1"}},
+		"zero price":      {Price: &Price{}, Local: srv},
+		"no output price": {Price: &Price{Input: 1}, Local: srv},
+		"no input price":  {Price: &Price{Output: 1}, Local: srv},
 	} {
 		if _, err := New("local/qwen", cfg); err == nil {
 			t.Errorf("%s: New() = nil, want an error", name)
 		}
 	}
-	if _, err := New("local/Bad Name", Config{Price: price, Local: srv}); err == nil {
-		t.Error("a bad local name was accepted")
-	}
 	if _, err := New("local/qwen", Config{Price: price, Local: srv}); err != nil {
 		t.Errorf("a complete local config: %v", err)
+	}
+}
+
+// A local/ reference with a name off the pattern is told so, not that opencode runs on OpenRouter only.
+func TestLocalRefusesABadNameAsLocal(t *testing.T) {
+	cfg := Config{Price: &Price{Input: 1, Output: 1}, Local: &Local{BaseURL: "http://m:1/v1", Context: 1000, Output: 100}}
+	for _, model := range []string{"local/Bad Name", "local/", "local/-x"} {
+		_, err := New(model, cfg)
+		if err == nil {
+			t.Errorf("New(%q) = nil, want an error", model)
+			continue
+		}
+		if msg := err.Error(); !strings.Contains(msg, "local/<name>") || strings.Contains(msg, "OpenRouter") {
+			t.Errorf("New(%q) = %q; want the local name's pattern, not OpenRouter", model, msg)
+		}
 	}
 }
 
