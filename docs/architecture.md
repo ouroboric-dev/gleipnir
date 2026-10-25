@@ -38,7 +38,10 @@ The harness: agent adapters, the devcontainer sandbox driver, policies and the c
   container through the firewall. The firewall also answers the work container's DNS queries itself, from
   the addresses it allows, so a name served from a large pool never resolves to an address the rules do
   not allow; it resolves nothing but the allowed hosts and the services' names. The services sit on an internal network with no route out, which the
-  firewall joins, so none of them can reach the internet for a client. Each sandbox starts on the stack layer its spec names, so leaves of
+  firewall joins, so none of them can reach the internet for a client. A spec with `Models` names a shared model
+  server: the firewall alone joins the server's network (`models`, external), which `Up` refuses unless
+  `podman network inspect` says it is internal, and opens the server's name on its one port, as it does a
+  service's. Validate refuses any other external or named network. Each sandbox starts on the stack layer its spec names, so leaves of
   different realms differ. A scratch sandbox holds one folder and no git directory: a planner's
   workspace (spec §3.3). A sandbox with no stack (a spec with no `Stack`, as a scratch session's) runs on Gleipnir's
   factory stack, the pinned Node image plus git (`FactoryStack`), under the factory layer: `FactoryImages()`,

@@ -1,0 +1,8 @@
+{
+  "dockerComposeFile": "compose.yaml",
+  "name": "ygg20261016101500a1b2c3scratchdesign6bdeaa07",
+  "service": "work",
+  "shutdownAction": "stopCompose",
+  "updateRemoteUserUID": false,
+  "workspaceFolder": "/u/scratch/design"
+}
