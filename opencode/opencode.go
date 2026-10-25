@@ -135,14 +135,12 @@ func newLocal(name string, cfg Config) (*Agent, error) {
 		return nil, fmt.Errorf("opencode: model local/%s needs a context size and an output limit", name)
 	case cfg.Price == nil:
 		return nil, fmt.Errorf("opencode: model local/%s needs a price, so the caps can count dollars", name)
-	case cfg.Privacy == "strict":
-		return nil, fmt.Errorf("opencode: privacy: strict can't be set for local/%s: the setting is made on OpenRouter's requests", name)
 	}
-	if cfg.Privacy != "" && cfg.Privacy != "standard" {
+	// A local model sends nothing outside the machine, so it meets privacy: strict with the same configuration.
+	switch cfg.Privacy {
+	case "", "standard", "strict":
+	default:
 		return nil, fmt.Errorf("opencode: privacy %q is neither standard nor strict", cfg.Privacy)
-	}
-	if err := CheckReasoning(cfg.Reasoning); err != nil {
-		return nil, err
 	}
 	if cfg.Reasoning != "" {
 		return nil, fmt.Errorf("opencode: a local model sets no reasoning effort: the model list sets it")

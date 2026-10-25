@@ -80,6 +80,11 @@ func TestLocalSessionNeedsNoOpenRouterKey(t *testing.T) {
 		t.Fatal(err)
 	}
 	run := f.calls[len(f.calls)-1]
+	for _, k := range []string{"OPENCODE_CONFIG_CONTENT", "OPENCODE_DISABLE_PROJECT_CONFIG", "OPENCODE_DISABLE_CLAUDE_CODE", "OPENCODE_DISABLE_EXTERNAL_SKILLS", "OPENCODE_DISABLE_AUTOUPDATE", "OPENCODE_DISABLE_SHARE", "OPENCODE_DISABLE_MODELS_FETCH"} {
+		if run.Env[k] == "" {
+			t.Errorf("%s isn't set in a local session", k)
+		}
+	}
 	if _, has := run.Env[KeyVar]; has {
 		t.Error("the key variable is in a local session's environment")
 	}
@@ -115,7 +120,6 @@ func TestLocalNeedsAPriceAndAServer(t *testing.T) {
 		"no server": {Price: price},
 		"no url":    {Price: price, Local: &Local{Context: 1000, Output: 100}},
 		"no limits": {Price: price, Local: &Local{BaseURL: "http://m:1/v1"}},
-		"strict":    {Price: price, Local: srv, Privacy: "strict"},
 	} {
 		if _, err := New("local/qwen", cfg); err == nil {
 			t.Errorf("%s: New() = nil, want an error", name)
@@ -126,5 +130,30 @@ func TestLocalNeedsAPriceAndAServer(t *testing.T) {
 	}
 	if _, err := New("local/qwen", Config{Price: price, Local: srv}); err != nil {
 		t.Errorf("a complete local config: %v", err)
+	}
+}
+
+// A local model sends nothing outside the machine, so it meets privacy: strict (design §6) with the same config.
+func TestLocalMeetsStrictPrivacyWithTheSameConfig(t *testing.T) {
+	cfg := Config{Price: &Price{Input: 1, Output: 1}, Local: &Local{BaseURL: "http://m:1/v1", Context: 1000, Output: 100}}
+	var confs []string
+	for _, privacy := range []string{"", "standard", "strict"} {
+		cfg.Privacy = privacy
+		a, err := New("local/qwen", cfg)
+		if err != nil {
+			t.Fatalf("privacy %q: %v", privacy, err)
+		}
+		c, err := a.ConfigJSON(gungnir.Task{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		confs = append(confs, c)
+	}
+	if confs[0] != confs[1] || confs[1] != confs[2] {
+		t.Errorf("the configs differ by privacy: %v", confs)
+	}
+	cfg.Privacy = "loose"
+	if _, err := New("local/qwen", cfg); err == nil {
+		t.Error("an unknown privacy was accepted")
 	}
 }
