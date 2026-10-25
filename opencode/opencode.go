@@ -24,11 +24,18 @@ import (
 	"github.com/ouroboric-dev/gleipnir/failure"
 	"github.com/ouroboric-dev/gleipnir/submit"
 	"github.com/ouroboric-dev/gungnir"
+	"github.com/ouroboric-dev/gungnir/schema"
 )
 
 // KeyVar is the one credential the adapter passes: a dedicated OpenRouter key with a hard credit
 // limit (spec §6.3).
 const KeyVar = "OPENROUTER_API_KEY"
+
+// LocalProvider is the provider name of a local model, in the session's configuration and in Result.Provider.
+const LocalProvider = "local"
+
+// openRouterProvider is the provider name of an OpenRouter model.
+const openRouterProvider = "openrouter"
 
 // maxStream is the most bytes of a session's output the adapter keeps in memory, and the most it
 // writes to the transcript. A chatty session is an agent failure, not a host that runs out of memory
@@ -42,10 +49,17 @@ var Hosts = []string{"openrouter.ai"}
 // the tool's own cost figure is missing or wrong.
 type Price struct{ Input, Output, CacheRead, CacheWrite float64 }
 
+// Local is the model server a local model (local/<name>) is served by, and the model's limits.
+type Local struct {
+	BaseURL         string // http://<name>:<port>/v1, on the model network
+	Context, Output int    // the model's context size and the most output tokens a request asks for
+}
+
 // Config holds what one role's adapter needs.
 type Config struct {
 	Privacy string              // "standard" or "strict"
-	Price   *Price              // optional: cost is then computed from tokens, and marked estimated
+	Price   *Price              // optional: cost is then computed from tokens, and marked estimated; required for a local model
+	Local   *Local              // required for a local model, ignored for an OpenRouter one
 	Getenv  func(string) string // the host's environment; os.Getenv by default
 
 	// Reasoning is the reasoning effort named on every request of the role: "low", "medium" or "high". Unset ("")
@@ -71,7 +85,16 @@ func CheckReasoning(v string) error {
 // Agent is the opencode adapter for one role's model.
 type Agent struct {
 	cfg   Config
-	model string // the id on OpenRouter, without the openrouter/ prefix
+	model string // the id on OpenRouter without the openrouter/ prefix, or the local model's name
+	local bool   // a local model: model is a name on the model server
+}
+
+// provider is the prefix of the model reference the adapter was built with.
+func (a *Agent) provider() string {
+	if a.local {
+		return LocalProvider
+	}
+	return openRouterProvider
 }
 
 var _ gungnir.Agent = (*Agent)(nil)
@@ -84,6 +107,9 @@ var strictProvider = map[string]any{"data_collection": "deny", "zdr": true, "all
 // privacy: strict for a model it can't tighten: the setting is made on OpenRouter's requests, so
 // it can't cover a model served any other way.
 func New(model string, cfg Config) (*Agent, error) {
+	if name, ok := schema.LocalModel(model); ok {
+		return newLocal(name, cfg)
+	}
 	id, ok := strings.CutPrefix(model, "openrouter/")
 	if !ok || id == "" {
 		return nil, fmt.Errorf("opencode: model %q must be openrouter/<model>: v0 runs opencode on OpenRouter only", model)
@@ -97,6 +123,31 @@ func New(model string, cfg Config) (*Agent, error) {
 		return nil, err
 	}
 	return &Agent{cfg: cfg, model: id}, nil
+}
+
+// newLocal checks a local model's configuration: the server and its limits, and a price, because the model's own
+// cost figure is zero and the caps count dollars.
+func newLocal(name string, cfg Config) (*Agent, error) {
+	switch {
+	case cfg.Local == nil || cfg.Local.BaseURL == "":
+		return nil, fmt.Errorf("opencode: model local/%s needs the model server's base URL", name)
+	case cfg.Local.Context <= 0 || cfg.Local.Output <= 0:
+		return nil, fmt.Errorf("opencode: model local/%s needs a context size and an output limit", name)
+	case cfg.Price == nil:
+		return nil, fmt.Errorf("opencode: model local/%s needs a price, so the caps can count dollars", name)
+	case cfg.Privacy == "strict":
+		return nil, fmt.Errorf("opencode: privacy: strict can't be set for local/%s: the setting is made on OpenRouter's requests", name)
+	}
+	if cfg.Privacy != "" && cfg.Privacy != "standard" {
+		return nil, fmt.Errorf("opencode: privacy %q is neither standard nor strict", cfg.Privacy)
+	}
+	if err := CheckReasoning(cfg.Reasoning); err != nil {
+		return nil, err
+	}
+	if cfg.Reasoning != "" {
+		return nil, fmt.Errorf("opencode: a local model sets no reasoning effort: the model list sets it")
+	}
+	return &Agent{cfg: cfg, model: name, local: true}, nil
 }
 
 func (a *Agent) Name() string { return "opencode" }
@@ -118,6 +169,9 @@ func (a *Agent) getenv(k string) string {
 // settings sit on the model, and small_model, which opencode uses for titles, is the same model: a
 // second model without them would send the prompt to a provider chosen with no filter (spike C).
 func (a *Agent) ConfigJSON(t gungnir.Task) (string, error) {
+	if a.local {
+		return a.localConfigJSON(t)
+	}
 	if err := CheckReasoning(a.cfg.Reasoning); err != nil {
 		return "", err
 	}
@@ -139,6 +193,30 @@ func (a *Agent) ConfigJSON(t gungnir.Task) (string, error) {
 		}},
 		"small_model": "openrouter/" + a.model,
 	}
+	return a.finishConfig(c, t)
+}
+
+// localConfigJSON is the configuration of a session on a local model (spec §3.8): one provider, local, that speaks
+// the OpenAI-compatible protocol to the model server. It names no key and no reasoning effort.
+func (a *Agent) localConfigJSON(t gungnir.Task) (string, error) {
+	c := map[string]any{
+		"$schema": "https://opencode.ai/config.json", "autoupdate": false, "share": "disabled",
+		"provider": map[string]any{LocalProvider: map[string]any{
+			"npm":     "@ai-sdk/openai-compatible",
+			"options": map[string]any{"baseURL": a.cfg.Local.BaseURL},
+			"models": map[string]any{a.model: map[string]any{
+				"tool_call": true, "reasoning": true,
+				"limit": map[string]any{"context": a.cfg.Local.Context, "output": a.cfg.Local.Output},
+			}},
+		}},
+		"small_model": LocalProvider + "/" + a.model,
+	}
+	return a.finishConfig(c, t)
+}
+
+// finishConfig adds what every session's configuration shares: the turn limit, the submit server and the read-only
+// permissions.
+func (a *Agent) finishConfig(c map[string]any, t gungnir.Task) (string, error) {
 	if t.MaxTurns > 0 {
 		c["agent"] = map[string]any{"build": map[string]any{"steps": t.MaxTurns}}
 	}
@@ -158,7 +236,12 @@ func (a *Agent) ConfigJSON(t gungnir.Task) (string, error) {
 
 // Args returns the command line of a session, apart from its prompt, which goes on stdin.
 func Args(t gungnir.Task, model string) []string {
-	args := []string{"opencode", "run", "--format", "json", "-m", "openrouter/" + model}
+	return args(t, openRouterProvider+"/"+model)
+}
+
+// args is Args for a model reference with its provider prefix.
+func args(t gungnir.Task, ref string) []string {
+	args := []string{"opencode", "run", "--format", "json", "-m", ref}
 	if !t.ReadOnly {
 		args = append(args, "--auto")
 	}
@@ -170,21 +253,28 @@ func (a *Agent) Run(ctx context.Context, t gungnir.Task) (gungnir.Result, error)
 	if t.Sandbox == nil {
 		return gungnir.Result{}, gungnir.ErrNoSandbox
 	}
-	if t.Model != "" && t.Model != "openrouter/"+a.model {
-		return gungnir.Result{}, fmt.Errorf("opencode: the task's model %q isn't the adapter's %q", t.Model, "openrouter/"+a.model)
+	ref := a.provider() + "/" + a.model
+	if t.Model != "" && t.Model != ref {
+		return gungnir.Result{}, fmt.Errorf("opencode: the task's model %q isn't the adapter's %q", t.Model, ref)
 	}
-	key := a.getenv(KeyVar)
-	if key == "" {
-		return gungnir.Result{}, fmt.Errorf("opencode: %s is not set; use a dedicated OpenRouter key with a credit limit", KeyVar)
+	env := map[string]string{}
+	if !a.local {
+		key := a.getenv(KeyVar)
+		if key == "" {
+			return gungnir.Result{}, fmt.Errorf("opencode: %s is not set; use a dedicated OpenRouter key with a credit limit", KeyVar)
+		}
+		env[KeyVar] = key
 	}
 	conf, err := a.ConfigJSON(t)
 	if err != nil {
 		return gungnir.Result{}, err
 	}
-	env := map[string]string{
-		KeyVar: key, "OPENCODE_CONFIG_CONTENT": conf,
+	for k, v := range map[string]string{
+		"OPENCODE_CONFIG_CONTENT":         conf,
 		"OPENCODE_DISABLE_PROJECT_CONFIG": "1", "OPENCODE_DISABLE_CLAUDE_CODE": "1", "OPENCODE_DISABLE_EXTERNAL_SKILLS": "1",
 		"OPENCODE_DISABLE_AUTOUPDATE": "true", "OPENCODE_DISABLE_SHARE": "true", "OPENCODE_DISABLE_MODELS_FETCH": "true",
+	} {
+		env[k] = v
 	}
 	for _, k := range t.EnvAllowlist {
 		if k == KeyVar || strings.HasPrefix(k, "OPENCODE_") || slices.Contains([]string{"ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"}, k) {
@@ -219,7 +309,7 @@ func (a *Agent) Run(ctx context.Context, t gungnir.Task) (gungnir.Result, error)
 			stop()
 		}
 	}, maxStream)
-	res, err := t.Sandbox.Run(ctx, gungnir.Cmd{Argv: Args(t, a.model), Env: env, Stdin: strings.NewReader(t.Prompt),
+	res, err := t.Sandbox.Run(ctx, gungnir.Cmd{Argv: args(t, ref), Env: env, Stdin: strings.NewReader(t.Prompt),
 		Stdout: io.MultiWriter(out, tw, watch), Stderr: errOut})
 	// The steps that finished before the session ended were spent, whatever way it ended (backlog B-020).
 	_, spent, _, _ := a.parse(bytes.NewReader(out.Bytes()), 0)
@@ -251,7 +341,7 @@ func (a *Agent) Run(ctx context.Context, t gungnir.Task) (gungnir.Result, error)
 		return gungnir.Result{}, &gungnir.SessionError{Kind: kind, Usage: used,
 			Err: fmt.Errorf("opencode: %w (exit %d; stderr: %s)", err, res.ExitCode, tail(string(errOut.Bytes())))}
 	}
-	r.TranscriptPath, r.Provider, r.CLIVersion = transcriptPath(t), "openrouter", version
+	r.TranscriptPath, r.Provider, r.CLIVersion = transcriptPath(t), a.provider(), version
 	if t.Output != "" {
 		// A read failure is an error, not a nil Submitted: Result has no field to say why, and Odin would repair
 		// blind. The session's usage goes with it.
