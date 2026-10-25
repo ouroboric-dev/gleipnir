@@ -63,6 +63,14 @@ The harness: agent adapters, the devcontainer sandbox driver, policies and the c
   from images pinned by digest and the Containerfile's own stages, with the isolated registry auth, and
   tagged with a hash of the context. The check scripts a realm bakes into its stack are read-only for the
   agent. A service may take the command its pack gives it, for an image that does nothing without one.
+- Builds the model server's image (`BuildModels`, for `ygg models build`; local-models spec §3.4): llama-server
+  from llama.cpp at a pinned commit, with CUDA for the architecture given (89 by default), and `ygg-modelgate`, on
+  bases pinned by digest in `assets/Containerfile.models`, pulled with the isolated registry auth. `ModelsImage()`
+  is its tag, a hash of that file, the entrypoint and the gate's source. The entrypoint starts llama-server on 8080
+  and the gate on `YGG_MODELGATE_PORT`, and exits when either exits. The gate (`assets/modelgate`, standard library
+  only) is the only path from a sandbox to llama-server: it passes `POST /v1/chat/completions` with no query and a
+  JSON body of at most 32 MiB whose one `model` equals the allow file, which it reads on each request, and streams
+  the answer. It answers 403 to any other method, path, query or model, 413, 400 or 503 (no allow file).
 - Grades a build (`Grade`, spec §11): builds the image of a benchmark task from its `environment/` folder
   (`BuildGrader`, with the rules of `BuildStack`, and a tag that is a hash of the folder), then runs
   `bash /tests/test.sh` in one container of that image, as `bash -c` with a tail that gives `/app` and

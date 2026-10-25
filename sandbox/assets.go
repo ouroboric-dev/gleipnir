@@ -38,6 +38,21 @@ var submitPackage string
 //go:embed assets/submit/package-lock.json
 var submitLock string
 
+// modelsContainerfile and modelsEntrypoint build and start the model server's image (local-models spec §3.4): see
+// models.go.
+//
+//go:embed assets/Containerfile.models
+var modelsContainerfile string
+
+//go:embed assets/models-entrypoint.sh
+var modelsEntrypoint string
+
+// modelGateSource is ygg-modelgate (local-models spec §3.5), the only path from a sandbox to llama-server. The
+// image's builder stage builds it from this one file, with the standard library only.
+//
+//go:embed assets/modelgate/main.go
+var modelGateSource string
+
 // writeSchemas writes every embedded schema of gungnir into dir: the contracts the work image carries at
 // /opt/ygg/schemas, which ygg-submit validates against.
 func writeSchemas(dir string) error {
