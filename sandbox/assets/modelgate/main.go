@@ -6,12 +6,14 @@
 // It passes a request to the upstream only when all of these hold:
 //
 //  1. The method is POST and the request target is exactly /v1/chat/completions: no query (the router reads
-//     ?autoload= from it), no escaped or doubled slash, no dot segment.
+//     ?autoload= from it), no escaped or doubled slash, no dot segment. It asks for no upgrade (no Upgrade header,
+//     and no Connection header naming upgrade), so the connection never turns into a tunnel past these checks, and
+//     its body is not encoded (no Content-Encoding but identity), so the bytes checked are the bytes read.
 //  2. The body is at most 32 MiB of UTF-8 JSON: one object, with one key "model" whose value is a string.
 //  3. That string equals the trimmed content of the allow file, which it reads on each request, so a new run's
 //     model needs no restart.
 //
-// Otherwise it answers 403 (method, path or model), 413 (size), 400 (not such JSON) or 503 (no allow file, or an
+// Otherwise it answers 403 (method, path, upgrade, encoding or model), 413 (size), 400 (not such JSON) or 503 (no allow file, or an
 // empty one), and the upstream never sees the request. It passes the body it checked, byte for byte, and streams
 // the response as the upstream writes it.
 //
@@ -108,6 +110,10 @@ func (g *gate) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		g.refuse(w, r, http.StatusForbidden, "only POST "+chatPath+" passes")
 		return
 	}
+	if why := plainRequest(r.Header); why != "" {
+		g.refuse(w, r, http.StatusForbidden, why)
+		return
+	}
 	allowed, err := os.ReadFile(g.allow)
 	model := strings.TrimSpace(string(allowed))
 	if err != nil || model == "" {
@@ -142,6 +148,30 @@ func (g *gate) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	r.TransferEncoding = nil
 	r.GetBody = func() (io.ReadCloser, error) { return io.NopCloser(bytes.NewReader(body)), nil }
 	g.proxy.ServeHTTP(w, r)
+}
+
+// plainRequest says why a request's headers are refused, or "" when they ask for no upgrade and the body is not
+// encoded. The reverse proxy passes an upgrade through and then copies bytes both ways, unchecked; llama-server may
+// decode a body the gate read as other bytes.
+func plainRequest(h http.Header) string {
+	if _, ok := h["Upgrade"]; ok {
+		return "an upgrade does not pass"
+	}
+	for _, v := range h.Values("Connection") {
+		for _, token := range strings.Split(v, ",") {
+			if strings.EqualFold(strings.TrimSpace(token), "upgrade") {
+				return "an upgrade does not pass"
+			}
+		}
+	}
+	for _, v := range h.Values("Content-Encoding") {
+		for _, token := range strings.Split(v, ",") {
+			if t := strings.TrimSpace(token); t != "" && !strings.EqualFold(t, "identity") {
+				return "an encoded body does not pass"
+			}
+		}
+	}
+	return ""
 }
 
 // modelOf returns the string "model" of a body that must be one JSON object, in UTF-8, with "model" once. A key is

@@ -77,7 +77,9 @@ The harness: agent adapters, the devcontainer sandbox driver, policies and the c
   and the gate on `YGG_MODELGATE_PORT`, and exits when either exits. The gate (`assets/modelgate`, standard library
   only) is the only path from a sandbox to llama-server: it passes `POST /v1/chat/completions` with no query and a
   JSON body of at most 32 MiB whose one `model` equals the allow file, which it reads on each request, and streams
-  the answer. It answers 403 to any other method, path, query or model, 413, 400 or 503 (no allow file).
+  the answer. It answers 403 to any other method, path, query or model, to an upgrade (an `Upgrade` header, or a
+  `Connection` header naming upgrade) and to a `Content-Encoding` other than identity; 413, 400 or 503 (no allow
+  file).
 - Grades a build (`Grade`, spec §11): builds the image of a benchmark task from its `environment/` folder
   (`BuildGrader`, with the rules of `BuildStack`, and a tag that is a hash of the folder), then runs
   `bash /tests/test.sh` in one container of that image, as `bash -c` with a tail that gives `/app` and

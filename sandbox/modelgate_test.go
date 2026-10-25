@@ -4,7 +4,9 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -205,6 +207,8 @@ func TestModelGateRefuses(t *testing.T) {
 		name, method, url, body string
 		allow                   *string // the allow file's content; nil: no file
 		chunked                 bool    // send the body with no Content-Length
+		header                  map[string]string
+		raw                     bool // write the request line as given, over a bare connection: an absolute-form target
 		want                    int
 	}{
 		{name: "another model", method: "POST", url: "/v1/chat/completions", body: `{"model":"qwen-b","messages":[]}`, want: 403},
@@ -233,6 +237,15 @@ func TestModelGateRefuses(t *testing.T) {
 		{name: "a model that is not a string", method: "POST", url: "/v1/chat/completions", body: `{"model":["qwen-a"]}`, want: 400},
 		{name: "two models", method: "POST", url: "/v1/chat/completions", body: `{"model":"qwen-a","model":"qwen-b"}`, want: 400},
 		{name: "not UTF-8", method: "POST", url: "/v1/chat/completions", body: "{\"model\":\"qwen-a\",\"x\":\"\xff\"}", want: 400},
+		{name: "an upgrade", method: "POST", url: "/v1/chat/completions", body: ok, header: map[string]string{"Connection": "Upgrade", "Upgrade": "websocket"}, want: 403},
+		{name: "an Upgrade header alone", method: "POST", url: "/v1/chat/completions", body: ok, header: map[string]string{"Upgrade": "h2c"}, want: 403},
+		{name: "a Connection naming upgrade", method: "POST", url: "/v1/chat/completions", body: ok, header: map[string]string{"Connection": "keep-alive, upgrade"}, want: 403},
+		{name: "a gzip body", method: "POST", url: "/v1/chat/completions", body: ok, header: map[string]string{"Content-Encoding": "gzip"}, want: 403},
+		{name: "identity then gzip", method: "POST", url: "/v1/chat/completions", body: ok, header: map[string]string{"Content-Encoding": "identity, gzip"}, want: 403},
+		{name: "an absolute-form target", method: "POST", url: "http://x/v1/chat/completions", body: ok, raw: true, want: 403},
+		{name: "a lowercase post", method: "post", url: "/v1/chat/completions", body: ok, raw: true, want: 403},
+		{name: "an escaped second model", method: "POST", url: "/v1/chat/completions", body: `{"model":"qwen-a","mod\u0065l":"qwen-b"}`, want: 400},
+		{name: "a second model, the plain form", method: "POST", url: "/v1/chat/completions", body: `{"model":"m","model":"other"}`, want: 400},
 		{name: "no allow file", method: "POST", url: "/v1/chat/completions", body: ok, allow: nil, want: 503},
 		{name: "an empty allow file", method: "POST", url: "/v1/chat/completions", body: `{"model":""}`, allow: ptr(" \n"), want: 503},
 	} {
@@ -248,6 +261,15 @@ func TestModelGateRefuses(t *testing.T) {
 				writeAllow(t, allow, "qwen-a")
 			}
 			base := startGate(t, up.URL, allow)
+			if c.raw {
+				if got := rawRequest(t, base, c.method, c.url, c.body); got != c.want {
+					t.Errorf("%s %s: %d; want %d", c.method, c.url, got, c.want)
+				}
+				if n := hits.Load(); n != 0 {
+					t.Errorf("the upstream saw %d requests; a refused request must never reach it", n)
+				}
+				return
+			}
 			u, err := url.Parse(base + c.url)
 			if err != nil {
 				t.Fatal(err)
@@ -266,6 +288,9 @@ func TestModelGateRefuses(t *testing.T) {
 			req.URL = u // keep the path as written: an escaped slash, a double slash, a dot segment
 			req.Header.Set("Content-Type", "application/json")
 			req.Header.Set("Expect", "100-continue") // the gate may refuse before the client sends a body it will not read
+			for k, v := range c.header {
+				req.Header.Set(k, v)
+			}
 			client := &http.Client{Transport: &http.Transport{ExpectContinueTimeout: 5 * time.Second}}
 			resp, err := client.Do(req)
 			if err != nil {
@@ -283,6 +308,52 @@ func TestModelGateRefuses(t *testing.T) {
 }
 
 func ptr(s string) *string { return &s }
+
+// rawRequest writes one request over a bare connection to the gate at base, with the method and the request target
+// exactly as given (no client rewrites them), and returns the status of the answer.
+func rawRequest(t *testing.T, base, method, target, body string) int {
+	t.Helper()
+	conn, err := net.Dial("tcp", strings.TrimPrefix(base, "http://"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	_ = conn.SetDeadline(time.Now().Add(10 * time.Second))
+	fmt.Fprintf(conn, "%s %s HTTP/1.1\r\nHost: x\r\nContent-Type: application/json\r\nContent-Length: %d\r\nConnection: close\r\n\r\n%s",
+		method, target, len(body), body)
+	resp, err := http.ReadResponse(bufio.NewReader(conn), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	return resp.StatusCode
+}
+
+// A body that says it is not encoded passes: Content-Encoding identity, or the header empty.
+func TestModelGatePassesAnIdentityBody(t *testing.T) {
+	up, _, hits := recordingUpstream(t)
+	allow := filepath.Join(t.TempDir(), "allowed")
+	writeAllow(t, allow, "qwen-a")
+	base := startGate(t, up.URL, allow)
+	for _, enc := range []string{"identity", ""} {
+		req, err := http.NewRequest("POST", base+"/v1/chat/completions", strings.NewReader(`{"model":"qwen-a","messages":[]}`))
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.Header.Set("Content-Encoding", enc)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != 200 {
+			t.Errorf("Content-Encoding %q: %d; want 200", enc, resp.StatusCode)
+		}
+	}
+	if n := hits.Load(); n != 2 {
+		t.Errorf("the upstream saw %d requests; want 2", n)
+	}
+}
 
 func TestModelGateRereadsTheAllowFile(t *testing.T) {
 	up, _, _ := recordingUpstream(t)
