@@ -19,6 +19,12 @@ The harness: agent adapters, the devcontainer sandbox driver, policies and the c
   deepseek-v4-flash took its prompt for an empty message in that state (v0-H17). Another value is an error from
   `New` and `ConfigJSON`. The `claude-code` and `scripted` adapters ignore the setting. Whether OpenRouter rejects
   `low` or `medium` for a model that does not support them is unverified.
+- The `opencode` adapter runs a local model (`local/<name>`, local-models spec §3.8) when `Config.Local` names
+  the model server (`BaseURL`, `Context`, `Output`) and `Config.Price` is above 0 for input and output. The
+  session names one provider, `LocalProvider` (`local`), speaking the OpenAI-compatible protocol to the server,
+  with no API key: it needs no `OPENROUTER_API_KEY`, and `Result.Provider` is `local`. Its cost is the tokens
+  times the price, marked estimated. A reasoning effort is refused, because the model list sets it. Privacy
+  `strict` is accepted with the same configuration as `standard`: the model sends nothing outside the machine.
 - Hands a session's typed output back (change typed-boundaries). A task with `Output` set gets one MCP server,
   `ygg`: Claude Code through `--mcp-config` (with `--strict-mcp-config` kept, so a leaf's `.mcp.json` is never
   read), opencode through the `mcp` key of its configuration (with project configuration switched off). Both start
@@ -37,12 +43,16 @@ The harness: agent adapters, the devcontainer sandbox driver, policies and the c
   consumes ask for (a database, object storage), and opens their ports, and only theirs, to the work
   container through the firewall. The firewall also answers the work container's DNS queries itself, from
   the addresses it allows, so a name served from a large pool never resolves to an address the rules do
-  not allow; it resolves nothing but the allowed hosts and the services' names. The services sit on an internal network with no route out, which the
-  firewall joins, so none of them can reach the internet for a client. Each sandbox starts on the stack layer its spec names, so leaves of
-  different realms differ. A scratch sandbox holds one folder and no git directory: a planner's
-  workspace (spec §3.3). A sandbox with no stack (a spec with no `Stack`, as a scratch session's) runs on Gleipnir's
-  factory stack, the pinned Node image plus git (`FactoryStack`), under the factory layer: `FactoryImages()`,
-  which a caller sets as `Config.Images`. `BuildFactory` builds both, pulling the Node image once.
+  not allow; it resolves nothing but the allowed hosts and the services' names. The services sit on an internal
+  network with no route out, which the firewall joins, so none of them can reach the internet for a client. A spec
+  with `Models` names a shared model server: the firewall alone joins the server's network (`models`, external),
+  which `Up` refuses unless `podman network inspect` says it is internal, and opens the server's name on its one
+  port, as it does a service's. Validate refuses any other external or named network. Each sandbox starts on the
+  stack layer its spec names, so leaves of different realms differ. A scratch sandbox holds one folder and no git
+  directory: a planner's workspace (spec §3.3). A sandbox with no stack (a spec with no `Stack`, as a scratch
+  session's) runs on Gleipnir's factory stack, the pinned Node image plus git (`FactoryStack`), under the factory
+  layer: `FactoryImages()`, which a caller sets as `Config.Images`. `BuildFactory` builds both, pulling the Node
+  image once.
 - Carries `ygg-submit` in the work image: a stdio MCP server (`ygg`, protocol 2025-06-18) through which a session
   hands back its typed output. Its `submit` tool takes the output or a draft file under `out/` and its `check` tool
   takes a draft; both validate against the contract in `$YGG_OUTPUT_CONTRACT` (one of gungnir's `schema.Contracts()`,
@@ -60,6 +70,16 @@ The harness: agent adapters, the devcontainer sandbox driver, policies and the c
   from images pinned by digest and the Containerfile's own stages, with the isolated registry auth, and
   tagged with a hash of the context. The check scripts a realm bakes into its stack are read-only for the
   agent. A service may take the command its pack gives it, for an image that does nothing without one.
+- Builds the model server's image (`BuildModels`, for `ygg models build`; local-models spec §3.4): llama-server
+  from llama.cpp at a pinned commit, with CUDA for the architecture given (89 by default), and `ygg-modelgate`, on
+  bases pinned by digest in `assets/Containerfile.models`, pulled with the isolated registry auth. `ModelsImage()`
+  is its tag, a hash of that file, the entrypoint and the gate's source. The entrypoint starts llama-server on 8080
+  and the gate on `YGG_MODELGATE_PORT`, and exits when either exits. The gate (`assets/modelgate`, standard library
+  only) is the only path from a sandbox to llama-server: it passes `POST /v1/chat/completions` with no query and a
+  JSON body of at most 32 MiB whose one `model` equals the allow file, which it reads on each request, and streams
+  the answer. It answers 403 to any other method, path, query or model, to an upgrade (an `Upgrade` header, or a
+  `Connection` header naming upgrade) and to a `Content-Encoding` other than identity; 413, 400 or 503 (no allow
+  file).
 - Grades a build (`Grade`, spec §11): builds the image of a benchmark task from its `environment/` folder
   (`BuildGrader`, with the rules of `BuildStack`, and a tag that is a hash of the folder), then runs
   `bash /tests/test.sh` in one container of that image, as `bash -c` with a tail that gives `/app` and

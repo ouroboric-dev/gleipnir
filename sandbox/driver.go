@@ -144,6 +144,11 @@ func (d *Driver) Up(ctx context.Context, spec gungnir.SandboxSpec) (gungnir.Env,
 			return gungnir.Env{}, fmt.Errorf("%w: %s (run ygg sandbox build)", ErrNoImage, img)
 		}
 	}
+	if m := spec.Models; m != nil {
+		if err := d.checkModelNetwork(ctx, m.Network); err != nil {
+			return gungnir.Env{}, err
+		}
+	}
 	project := Project(spec)
 	env := gungnir.Env{Name: spec.Name, Project: project, Workdir: Root + "/" + spec.Layout().Leaf}
 	// A start sometimes hangs at compose up for no known cause and the next one succeeds in
@@ -176,6 +181,21 @@ func (d *Driver) Up(ctx context.Context, spec gungnir.SandboxSpec) (gungnir.Env,
 		return gungnir.Env{}, err
 	}
 	return env, nil
+}
+
+// checkModelNetwork refuses the model network unless the engine says it is internal: the firewall joins
+// it beside its other networks, so a network with a route out would be a way past the firewall's rules
+// for the server, and for any container on it (local-models spec §3.7, §6). An answer that is not
+// exactly true, or no answer, is a refusal.
+func (d *Driver) checkModelNetwork(ctx context.Context, name string) error {
+	out, err := d.run(ctx, d.Podman, "network", "inspect", "--format", "{{.Internal}}", name)
+	if err != nil {
+		return fmt.Errorf("the model network %s can't be inspected: %w", name, err)
+	}
+	if got := strings.TrimSpace(string(out)); got != "true" {
+		return fmt.Errorf("the model network %s is not internal (podman network inspect says %q): it must have no route out", name, got)
+	}
+	return nil
 }
 
 // containerID reads the result line of devcontainer up: its last line that is a JSON object with an

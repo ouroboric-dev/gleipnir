@@ -107,6 +107,7 @@ func Validate(g Generated, spec gungnir.SandboxSpec, c Config) error {
 		svc, _ := services[name].(map[string]any)
 		scanService(name, svc, say)
 	}
+	scanNetworks(cf, spec, say)
 
 	if len(problems) == 0 {
 		problems = append(problems, differences(g, spec, c)...)
@@ -141,6 +142,26 @@ func scanService(name string, svc map[string]any, say func(string, ...any)) {
 				say("compose.yaml: service %s sets %s; credentials go to one command at a time, never into the container", name, k)
 			}
 		}
+	}
+}
+
+// scanNetworks refuses a declared network that joins one the factory did not make: one with external
+// set to anything, or with a name, which podman-compose joins if a network of that name exists. The one
+// exception is the model network of a spec with Models, external, under exactly the server's network
+// (local-models spec §3.7).
+func scanNetworks(cf map[string]any, spec gungnir.SandboxSpec, say func(string, ...any)) {
+	nets, _ := cf["networks"].(map[string]any)
+	for _, key := range sortedKeys(nets) {
+		n, _ := nets[key].(map[string]any)
+		external, hasExternal := n["external"]
+		name, hasName := n["name"]
+		if !hasExternal && !hasName {
+			continue
+		}
+		if m := spec.Models; m != nil && key == ModelsNetwork && len(n) == 2 && external == true && name == m.Network {
+			continue
+		}
+		say("compose.yaml: network %s joins a network the factory did not make (external %v, name %v); only the model network is external", key, external, name)
 	}
 }
 

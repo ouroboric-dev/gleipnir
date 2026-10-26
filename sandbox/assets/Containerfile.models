@@ -1,0 +1,50 @@
+# The model server's image (local-models spec §3.4): llama-server in router mode, and ygg-modelgate in front of it.
+# Three stages:
+#   llama   llama-server from ggml-org/llama.cpp at LLAMA_CPP_COMMIT, with CUDA for CUDA_ARCH (default 89)
+#   gate    ygg-modelgate from modelgate/main.go: the standard library only
+#   (last)  the CUDA runtime, both programs and the entrypoint, which starts both and exits when either exits
+# Every base is pinned by digest here (the digest of its multi-arch index). The driver (BuildModels) pulls them with
+# the isolated registry auth and builds with --pull=never. The tag is a hash of this file, the entrypoint and the
+# gate's source, so a new pin here is a new image.
+# The image is built on the host that runs it (ygg models build), so the CPU code is native to that host.
+ARG CUDA_DEVEL_IMAGE=docker.io/nvidia/cuda:12.9.1-devel-ubuntu22.04@sha256:bd4e2680a261c212f1e2fea241606f71497dc67a417f73175d794ec8212b5ba8
+ARG CUDA_RUNTIME_IMAGE=docker.io/nvidia/cuda:12.9.1-runtime-ubuntu22.04@sha256:d90541b92124899904e0860a4ac1955606b3bc45ad6cc9dab16567fd1111e326
+ARG GO_IMAGE=docker.io/library/golang:1.26.10-bookworm@sha256:632dff7351799a5a9954a48dc06670ade72ee44e8c351cdc0e5a57af2fea21af
+
+FROM ${CUDA_DEVEL_IMAGE} AS llama
+ARG CUDA_ARCH=89
+ARG LLAMA_CPP_COMMIT=4c3c5810f87efe177949f1b85ae509d38a2a311f
+RUN apt-get update && apt-get install -y --no-install-recommends git ca-certificates cmake build-essential \
+ && rm -rf /var/lib/apt/lists/*
+# The commit by its full hash, checked after the checkout.
+RUN git init -q /src/llama.cpp && cd /src/llama.cpp \
+ && git fetch -q --depth 1 https://github.com/ggml-org/llama.cpp "${LLAMA_CPP_COMMIT}" \
+ && git checkout -q --detach FETCH_HEAD \
+ && test "$(git rev-parse HEAD)" = "${LLAMA_CPP_COMMIT}"
+# No web UI (neither built nor downloaded) and no HTTPS client: the server serves the gate only. The linker flag is
+# upstream's (.devops/cuda.Dockerfile): libcuda comes from the host's driver at run time, not from this image.
+RUN cd /src/llama.cpp \
+ && cmake -B build -DCMAKE_BUILD_TYPE=Release -DGGML_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=${CUDA_ARCH} \
+      -DLLAMA_BUILD_UI=OFF -DLLAMA_USE_PREBUILT_UI=OFF -DLLAMA_OPENSSL=OFF \
+      -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_EXAMPLES=OFF \
+      -DCMAKE_EXE_LINKER_FLAGS=-Wl,--allow-shlib-undefined \
+ && cmake --build build --config Release --target llama-server -j"$(nproc)" \
+ && mkdir -p /opt/llama/bin /opt/llama/lib \
+ && cp build/bin/llama-server /opt/llama/bin/ \
+ && find build -name '*.so*' -exec cp -P {} /opt/llama/lib/ \;
+
+FROM ${GO_IMAGE} AS gate
+COPY modelgate/main.go /src/modelgate/main.go
+RUN cd /src/modelgate && CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' -o /out/ygg-modelgate main.go
+
+FROM ${CUDA_RUNTIME_IMAGE}
+RUN apt-get update && apt-get install -y --no-install-recommends libgomp1 \
+ && rm -rf /var/lib/apt/lists/*
+COPY --from=llama /opt/llama /opt/llama
+COPY --from=gate /out/ygg-modelgate /usr/local/bin/ygg-modelgate
+COPY models-entrypoint.sh /usr/local/bin/ygg-models-entrypoint
+RUN chmod 0755 /usr/local/bin/ygg-models-entrypoint /usr/local/bin/ygg-modelgate \
+ && mkdir -p /models /etc/ygg-models
+ENV PATH=/opt/llama/bin:$PATH \
+    LD_LIBRARY_PATH=/opt/llama/lib:$LD_LIBRARY_PATH
+ENTRYPOINT ["/usr/local/bin/ygg-models-entrypoint"]

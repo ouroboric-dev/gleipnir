@@ -48,6 +48,11 @@ const (
 // (review C-1).
 const ServicesNetwork = "services"
 
+// ModelsNetwork is the compose network through which a sandbox reaches the shared model server
+// (local-models spec §3.7). It is external: the server's own internal network, which the operator
+// created; Up checks that it is internal before the sandbox starts. Only the firewall joins it.
+const ModelsNetwork = "models"
+
 // PathMap says that the engine sees the host path Host as Engine.
 type PathMap struct{ Host, Engine string }
 
@@ -129,9 +134,12 @@ type composeFile struct {
 	Networks map[string]network `yaml:"networks,omitempty"`
 }
 
-// network is a compose network. Internal ones have no route out.
+// network is a compose network. Internal ones have no route out. An external one is a network the
+// factory does not make, joined by its Name: the model network alone (Validate refuses any other).
 type network struct {
-	Internal bool `yaml:"internal,omitempty"`
+	Internal bool   `yaml:"internal,omitempty"`
+	External bool   `yaml:"external,omitempty"`
+	Name     string `yaml:"name,omitempty"`
 }
 
 type service struct {
@@ -200,6 +208,15 @@ func render(dir string, spec gungnir.SandboxSpec, c Config) (map[string][]byte, 
 	if err := spec.Validate(); err != nil {
 		return nil, Generated{}, err
 	}
+	if m := spec.Models; m != nil {
+		// The firewall opens every port of a name on every address the name has: a service that shared
+		// the server's name would open its ports on the server too, such as 8080, past the gate.
+		for _, v := range spec.Services {
+			if v.Name == m.Name {
+				return nil, Generated{}, fmt.Errorf("the service %s has the name of the model server", v.Name)
+			}
+		}
+	}
 	images := c.ImagesOf(spec)
 	if images.Work == "" || images.Firewall == "" || c.UID <= 0 || c.GID <= 0 {
 		return nil, Generated{}, errors.New("the driver needs both images and a non-root uid and gid")
@@ -258,11 +275,22 @@ func render(dir string, spec gungnir.SandboxSpec, c Config) (map[string][]byte, 
 	slices.Sort(names)
 	fwSvc, workSvc := cf.Services["fw"], cf.Services["work"]
 	fwSvc.DependsOn, workSvc.DependsOn = names, append([]string{"fw"}, names...)
-	if len(names) > 0 {
+	// The model server's network (local-models spec §3.7) is joined by the firewall alone, so the work
+	// container reaches the server through the firewall's rules, which open the server's name on its one
+	// port. Neither the work container nor a service joins it.
+	if len(names) > 0 || spec.Models != nil {
 		// default is declared too: a compose file that declares one network makes it the default one
 		// for podman-compose, so the firewall's default would otherwise be missing.
-		cf.Networks = map[string]network{"default": {}, ServicesNetwork: {Internal: true}}
-		fwSvc.Networks = []string{"default", ServicesNetwork}
+		cf.Networks = map[string]network{"default": {}}
+		fwSvc.Networks = []string{"default"}
+		if len(names) > 0 {
+			cf.Networks[ServicesNetwork] = network{Internal: true}
+			fwSvc.Networks = append(fwSvc.Networks, ServicesNetwork)
+		}
+		if m := spec.Models; m != nil {
+			cf.Networks[ModelsNetwork] = network{External: true, Name: m.Network}
+			fwSvc.Networks = append(fwSvc.Networks, ModelsNetwork)
+		}
 	}
 	cf.Services["fw"], cf.Services["work"] = fwSvc, workSvc
 	dc := map[string]any{
@@ -287,6 +315,9 @@ func render(dir string, spec gungnir.SandboxSpec, c Config) (map[string][]byte, 
 		for _, p := range v.Ports {
 			fmt.Fprintf(&ports, "%s %d\n", v.Name, p)
 		}
+	}
+	if m := spec.Models; m != nil {
+		fmt.Fprintf(&ports, "%s %d\n", m.Name, m.Port) // the gate's port: the one port of the server the work container reaches
 	}
 	return map[string][]byte{
 		g.Compose: composeYAML, g.Devcontainer: append(dcJSON, '\n'), g.Hosts: []byte(hosts), g.Services: []byte(ports.String()),

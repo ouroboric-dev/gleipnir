@@ -34,7 +34,7 @@ func fakeEngine(t *testing.T) (d *Driver, log string, sp gungnir.SandboxSpec) {
 echo "env host=${CONTAINER_HOST:-} auth=${REGISTRY_AUTH_FILE:-} docker=${DOCKER_CONFIG:-} tok=${TOKEN:-}" >> "$STUB_LOG"
 case "$1" in
   image) case " $STUB_MISSING " in *" $3 "*) exit 1 ;; esac; exit 0 ;;
-  network) [ "$2" = exists ] && exit 0; exit 0 ;;
+  network) case "$2" in inspect) printf '%s\n' "${STUB_NET_INTERNAL-true}"; exit "${STUB_NET_INSPECT_EXIT:-0}" ;; esac; exit 0 ;;
   run) case "$*" in *-chown\ *) exit "${STUB_CHOWN_EXIT:-0}" ;; esac
     [ -z "$STUB_RUN_OUT" ] || cat "$STUB_RUN_OUT"
     [ -z "$STUB_RUN_ERR" ] || cat "$STUB_RUN_ERR" >&2

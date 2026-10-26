@@ -1,4 +1,7 @@
 extends: default
+ignore: |
+  # Goldens of generated output, compared byte for byte, so they keep the generator's line lengths.
+  sandbox/testdata/nomodels/
 rules:
   line-length:
     max: 120

@@ -1,0 +1,46 @@
+name: ygg20261016101500a1b2c3reposappe7649e8b
+services:
+    fw:
+        image: localhost/ygg-fw:abc
+        pull_policy: never
+        command:
+            - sh
+            - /etc/ygg-fw/egress.sh
+            - /etc/ygg-fw/hosts
+            - /etc/ygg-fw/services
+        user: "0:0"
+        userns_mode: keep-id
+        cap_add:
+            - NET_ADMIN
+        labels:
+            dev.ouroboric.ygg.leaf: repos/app
+            dev.ouroboric.ygg.run: 20261016-101500-a1b2c3
+        volumes:
+            - /mnt/wsl/cfg/sandbox/fw:/etc/ygg-fw:ro,Z
+    work:
+        image: localhost/ygg-work:abc
+        pull_policy: never
+        command:
+            - sleep
+            - infinity
+        user: 1000:1000
+        userns_mode: keep-id
+        cap_drop:
+            - ALL
+        security_opt:
+            - no-new-privileges:true
+        network_mode: service:fw
+        depends_on:
+            - fw
+        environment:
+            HOME: /home/ygg
+            XDG_CACHE_HOME: /home/ygg/.cache
+            XDG_CONFIG_HOME: /home/ygg/.config
+            XDG_DATA_HOME: /home/ygg/.local/share
+            XDG_STATE_HOME: /home/ygg/.local/state
+        labels:
+            dev.ouroboric.ygg.leaf: repos/app
+            dev.ouroboric.ygg.run: 20261016-101500-a1b2c3
+        volumes:
+            - /mnt/wsl/ygg-bind/proj/repos/app:/u/repos/app:Z
+            - /mnt/wsl/ygg-bind/proj/.git/modules/repos/app:/u/.git/modules/repos/app:ro,Z
