@@ -89,7 +89,7 @@ func TestLocalSessionNeedsNoOpenRouterKey(t *testing.T) {
 	if _, has := run.Env[KeyVar]; has {
 		t.Error("the key variable is in a local session's environment")
 	}
-	if got := strings.Join(run.Argv, " "); got != "opencode run --format json -m local/qwen3.8-27b --auto" {
+	if got := strings.Join(run.Argv, " "); got != "opencode run --format json -m local/qwen3.8-27b --thinking --auto" {
 		t.Errorf("argv = %q", got)
 	}
 	if r.Provider != "local" {

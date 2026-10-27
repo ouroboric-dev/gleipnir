@@ -273,6 +273,10 @@ func Args(t gungnir.Task, model string) []string {
 // args is Args for a model reference with its provider prefix.
 func args(t gungnir.Task, ref string) []string {
 	args := []string{"opencode", "run", "--format", "json", "-m", ref}
+	if strings.HasPrefix(ref, LocalProvider+"/") {
+		// opencode prints reasoning events only with --thinking: a local model's thinking then lands in the transcript.
+		args = append(args, "--thinking")
+	}
 	if !t.ReadOnly {
 		args = append(args, "--auto")
 	}

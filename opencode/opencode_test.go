@@ -539,3 +539,30 @@ func TestASessionUnderItsTokenLimitOrWithNoneEndsOK(t *testing.T) {
 		}
 	}
 }
+
+// Reasoning events (a local model's thinking, printed with --thinking) are in the transcript and nothing else:
+// the answer is the text part and the usage is the step's.
+func TestReasoningEventsAreNeitherTheAnswerNorUsage(t *testing.T) {
+	f := &fake{stdout: map[string]string{"run": fixture(t, "stream-reasoning.jsonl")}}
+	r, err := newAgent(t, "standard", nil).Run(context.Background(), task(f, t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := gungnir.Usage{InTok: 7, OutTok: 5, CacheTok: 80, Turns: 1, CostUSD: 0.00001005, CostEstimated: true}
+	if r.Status != gungnir.StatusOK || r.Summary != "Hello from the fake." || r.Usage != want {
+		t.Errorf("Result = %+v, want summary %q and usage %+v", r, "Hello from the fake.", want)
+	}
+}
+
+// An OpenRouter session does not print thinking: its command line has no --thinking.
+func TestAnOpenRouterSessionHasNoThinkingFlag(t *testing.T) {
+	for _, ro := range []bool{false, true} {
+		tk := task(&fake{}, t)
+		tk.ReadOnly = ro
+		for _, a := range Args(tk, "openai/gpt-4o-mini") {
+			if a == "--thinking" {
+				t.Errorf("--thinking in an OpenRouter command line (read-only %v)", ro)
+			}
+		}
+	}
+}

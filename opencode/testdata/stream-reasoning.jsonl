@@ -1,0 +1,5 @@
+{"type":"step_start","timestamp":1792133411472,"sessionID":"ses_r","part":{"id":"prt_1","messageID":"msg_1","sessionID":"ses_r","type":"step-start"}}
+{"type":"reasoning","timestamp":1792133411473,"sessionID":"ses_r","part":{"id":"prt_2","messageID":"msg_1","sessionID":"ses_r","type":"reasoning","text":"The user wants a greeting. I will say hello.","time":{"start":1792133411459,"end":1792133411461}}}
+{"type":"text","timestamp":1792133411474,"sessionID":"ses_r","part":{"id":"prt_3","messageID":"msg_1","sessionID":"ses_r","type":"text","text":"Hello from the fake.","time":{"start":1792133411462,"end":1792133411463}}}
+{"type":"reasoning","timestamp":1792133411475,"sessionID":"ses_r","part":{"id":"prt_4","messageID":"msg_1","sessionID":"ses_r","type":"reasoning","text":"Done; nothing to add.","time":{"start":1792133411464,"end":1792133411465}}}
+{"type":"step_finish","timestamp":1792133411476,"sessionID":"ses_r","part":{"id":"prt_5","reason":"stop","messageID":"msg_1","sessionID":"ses_r","type":"step-finish","tokens":{"total":92,"input":7,"output":5,"reasoning":0,"cache":{"write":0,"read":80}},"cost":0.00001005}}
