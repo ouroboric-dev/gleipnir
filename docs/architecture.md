@@ -88,13 +88,15 @@ The harness: agent adapters, the devcontainer sandbox driver, policies and the c
 - Builds the model server's image (`BuildModels`, for `ygg models build`; local-models spec §3.4): llama-server
   from llama.cpp at a pinned commit, with CUDA for the architecture given (89 by default), and `ygg-modelgate`, on
   bases pinned by digest in `assets/Containerfile.models`, pulled with the isolated registry auth. `ModelsImage()`
-  is its tag, a hash of that file, the entrypoint and the gate's source. The entrypoint starts llama-server on 8080
+  is its tag, a hash of that file, the entrypoint and the gate's source; `ModelsImageFor(cudaArch)` adds a CUDA
+  architecture other than the default, so a build for another architecture has its own tag. The entrypoint starts llama-server on 8080
   and the gate on `YGG_MODELGATE_PORT`, and exits when either exits. The gate (`assets/modelgate`, standard library
   only) is the only path from a sandbox to llama-server: it passes `POST /v1/chat/completions` with no query and a
   JSON body of at most 32 MiB whose one `model` equals the allow file, which it reads on each request, and streams
   the answer. It answers 403 to any other method, path, query or model, to an upgrade (an `Upgrade` header, or a
-  `Connection` header naming upgrade) and to a `Content-Encoding` other than identity; 413, 400 or 503 (no allow
-  file).
+  `Connection` header naming upgrade) and to a `Content-Encoding` other than identity; 413 to a body over the limit, 400 to a body that is not such JSON,
+  503 for no allow file, an empty one, or 8 requests already in flight, 408 to a body not read within 60 seconds,
+  and 500 if the read deadline cannot be set or cleared. The connection closes after every refusal.
 - Grades a build (`Grade`, spec §11): builds the image of a benchmark task from its `environment/` folder
   (`BuildGrader`, with the rules of `BuildStack`, and a tag that is a hash of the folder), then runs
   `bash /tests/test.sh` in one container of that image, as `bash -c` with a tail that gives `/app` and

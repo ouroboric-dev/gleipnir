@@ -21,8 +21,10 @@ if [ "${#port}" -gt 5 ] || [ "$port" -gt 65535 ] || [ "$port" -eq 8080 ]; then b
 # The trap comes first, so a TERM during the start is passed on. It stops the programs started so far: it asks the
 # shell for its jobs, not $server and $gate, which are not set yet when the TERM arrives between a start and its
 # assignment.
-# shellcheck disable=SC2046 # the job ids are numbers, and none is no word
-trap 'kill -TERM $(jobs -p) 2>/dev/null; wait; exit 143' TERM INT
+# shellcheck disable=SC2046,SC2329 # SC2329: the traps call it. SC2046: the process ids are numbers, and none is no word
+stop() { kill -TERM $(jobs -p) 2>/dev/null; wait; exit "$1"; }
+trap 'stop 143' TERM
+trap 'stop 130' INT
 
 llama-server --models-preset /etc/ygg-models/preset.ini --models-max 1 --host 0.0.0.0 --port 8080 &
 server=$!

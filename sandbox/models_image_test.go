@@ -223,8 +223,8 @@ func TestModelsImageBuildRefusesAnArchitectureItCannotPass(t *testing.T) {
 }
 
 // fakeServerPrograms writes a llama-server and a ygg-modelgate that log their arguments and stay up until they are
-// stopped, or exit with the code their variable gives. With SERVER_TERM_PARENT set, llama-server first sends TERM to
-// its parent, the entrypoint, so the TERM arrives before the gate starts.
+// stopped, or exit with the code their variable gives. With SERVER_SIGNAL_PARENT set to a signal name, llama-server
+// first sends that signal to its parent, the entrypoint, soon after the start.
 func fakeServerPrograms(t *testing.T) (bin, log string) {
 	t.Helper()
 	bin = t.TempDir()
@@ -246,7 +246,7 @@ func termParent(name string) string {
 	if name != "llama-server" {
 		return ""
 	}
-	return "if [ -n \"${SERVER_TERM_PARENT:-}\" ]; then kill -TERM \"$PPID\"; fi\n"
+	return "if [ -n \"${SERVER_SIGNAL_PARENT:-}\" ]; then kill -\"$SERVER_SIGNAL_PARENT\" \"$PPID\"; fi\n"
 }
 
 func runEntrypoint(t *testing.T, env ...string) (code int, calls string, took time.Duration) {
@@ -304,16 +304,22 @@ func TestModelsImageEntrypointStartsBothAndExitsWhenEitherExits(t *testing.T) {
 	}
 }
 
-func TestModelsImageEntrypointStopsWhatItStartedOnATermBeforeTheGateStarts(t *testing.T) {
-	code, calls, took := runEntrypoint(t, "YGG_MODELGATE_PORT=8090", "SERVER_TERM_PARENT=1")
-	if code == 0 {
-		t.Errorf("the entrypoint exited 0 after a TERM")
-	}
-	if took > 10*time.Second {
-		t.Errorf("the entrypoint took %s to exit", took)
-	}
-	if !strings.Contains(calls, "llama-server stopped\n") {
-		t.Errorf("the TERM was not passed on to llama-server:\n%s", calls)
+// A signal soon after the start stops what has started. The gate may or may not have started when it arrives; the
+// old script, which set its trap after both starts, left llama-server running.
+func TestModelsImageEntrypointStopsWhatItStartedOnASignalSoonAfterTheStart(t *testing.T) {
+	for sig, want := range map[string]int{"TERM": 143, "INT": 130} {
+		t.Run(sig, func(t *testing.T) {
+			code, calls, took := runEntrypoint(t, "YGG_MODELGATE_PORT=8090", "SERVER_SIGNAL_PARENT="+sig)
+			if code != want {
+				t.Errorf("the entrypoint exited %d after %s; want %d", code, sig, want)
+			}
+			if took > 10*time.Second {
+				t.Errorf("the entrypoint took %s to exit", took)
+			}
+			if !strings.Contains(calls, "llama-server stopped\n") {
+				t.Errorf("the %s was not passed on to llama-server:\n%s", sig, calls)
+			}
+		})
 	}
 }
 
