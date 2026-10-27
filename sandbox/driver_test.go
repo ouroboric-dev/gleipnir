@@ -303,14 +303,31 @@ func TestDownRemovesTheSandboxsPod(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := logOf(t, log)
-	if !strings.Contains(got, "podman pod rm pod_"+env.Project+"\n") {
+	if !strings.Contains(got, "podman pod rm -f -t 2 pod_"+env.Project+"\n") {
 		t.Errorf("Down didn't remove the sandbox's pod:\n%s", got)
 	}
-	if strings.Contains(got, "pod rm -f") || strings.Contains(got, "pod prune") {
-		t.Errorf("Down forced a pod's removal or pruned pods:\n%s", got)
+	if strings.Contains(got, "pod prune") {
+		t.Errorf("Down pruned pods:\n%s", got)
 	}
 	if strings.Count(got, "pod rm") != 1 {
 		t.Errorf("Down should remove exactly one pod:\n%s", got)
+	}
+}
+
+// Backlog B-206: podman rm --depend names a service as removed and leaves it running when two of its
+// dependents also depend on each other, as fw and work do. Down removes the sandbox's own pod with its
+// containers, by force, before it removes containers by label, so no container of the pod goes through
+// --depend.
+func TestDownRemovesThePodWithItsContainersFirst(t *testing.T) {
+	d, log, sp := fakeEngine(t)
+	env := gungnir.Env{Project: Project(sp), Container: "work123"}
+	if err := d.Down(context.Background(), env); err != nil {
+		t.Fatal(err)
+	}
+	got := logOf(t, log)
+	pod, label := strings.Index(got, "podman pod rm -f -t 2 pod_"+env.Project+"\n"), strings.Index(got, "podman rm -f -t 2 --depend")
+	if pod < 0 || label < 0 || pod > label {
+		t.Errorf("Down didn't remove the pod, by force, before the containers it finds by label:\n%s", got)
 	}
 }
 
