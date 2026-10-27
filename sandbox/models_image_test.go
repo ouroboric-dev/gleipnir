@@ -223,13 +223,15 @@ func TestModelsImageBuildRefusesAnArchitectureItCannotPass(t *testing.T) {
 }
 
 // fakeServerPrograms writes a llama-server and a ygg-modelgate that log their arguments and stay up until they are
-// stopped, or exit with the code their variable gives.
+// stopped, or exit with the code their variable gives. With SERVER_TERM_PARENT set, llama-server first sends TERM to
+// its parent, the entrypoint, so the TERM arrives before the gate starts.
 func fakeServerPrograms(t *testing.T) (bin, log string) {
 	t.Helper()
 	bin = t.TempDir()
 	log = filepath.Join(bin, "calls.log")
 	for name, exitVar := range map[string]string{"llama-server": "SERVER_EXIT", "ygg-modelgate": "GATE_EXIT"} {
 		body := "#!/bin/sh\necho \"" + name + " $*\" >> \"$CALLS\"\n" +
+			termParent(name) +
 			"if [ -n \"${" + exitVar + ":-}\" ]; then sleep 0.3; exit \"$" + exitVar + "\"; fi\n" +
 			"trap 'echo \"" + name + " stopped\" >> \"$CALLS\"; kill \"$s\" 2>/dev/null; exit 143' TERM\n" +
 			"sleep 30 & s=$!\nwait \"$s\"\n"
@@ -238,6 +240,13 @@ func fakeServerPrograms(t *testing.T) (bin, log string) {
 		}
 	}
 	return bin, log
+}
+
+func termParent(name string) string {
+	if name != "llama-server" {
+		return ""
+	}
+	return "if [ -n \"${SERVER_TERM_PARENT:-}\" ]; then kill -TERM \"$PPID\"; fi\n"
 }
 
 func runEntrypoint(t *testing.T, env ...string) (code int, calls string, took time.Duration) {
@@ -292,6 +301,19 @@ func TestModelsImageEntrypointStartsBothAndExitsWhenEitherExits(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestModelsImageEntrypointStopsWhatItStartedOnATermBeforeTheGateStarts(t *testing.T) {
+	code, calls, took := runEntrypoint(t, "YGG_MODELGATE_PORT=8090", "SERVER_TERM_PARENT=1")
+	if code == 0 {
+		t.Errorf("the entrypoint exited 0 after a TERM")
+	}
+	if took > 10*time.Second {
+		t.Errorf("the entrypoint took %s to exit", took)
+	}
+	if !strings.Contains(calls, "llama-server stopped\n") {
+		t.Errorf("the TERM was not passed on to llama-server:\n%s", calls)
 	}
 }
 
