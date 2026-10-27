@@ -9,12 +9,13 @@ package sandbox
 // pulls nothing. The network and the stub are named for this run alone and removed at the end; the test
 // touches nothing else on the engine.
 //
-// The firewall resolves the listed hosts again every YGG_REFRESH seconds, as root, through the first nameserver
-// of its resolv.conf, and dnsmasq forwards the services' names and the server's to that same nameserver. Beside
-// an internal network that nameserver may be the internal network's, which need not know an outside name, and a
-// refresh would then keep the old addresses with no error. So the test runs the refresh's own lookup (getent
-// ahostsv4, as root in the firewall) for a listed host, with the model network alone and with a realm service
-// beside it. It does not force a refresh of the running script: its environment is the generated file's, which
+// The firewall resolves the listed hosts again every YGG_REFRESH seconds, as root, through one resolver: the
+// nameserver inside the subnet of its default route, which its resolv.conf names alone. dnsmasq forwards the
+// services' names and the server's to that same resolver. An internal network's resolver answers outside names
+// only by forwarding them, so if the firewall asked it, a refresh could keep the old addresses with no error. So the
+// test runs the refresh's own lookup (getent ahostsv4, as root in the firewall) for a listed host, and checks that
+// the rules and the firewall's DNS name the default network's resolver alone, with the model network alone and
+// with a realm service beside it. It does not force a refresh of the running script: its environment is the generated file's, which
 // Validate keeps, and ending its sleep ends its loop.
 //
 // Run: go test -tags sandbox -run TestIntegrationModelNetwork -v -timeout 40m ./sandbox
@@ -23,6 +24,9 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"fmt"
+	"net"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -199,13 +203,15 @@ func refreshResolves(t *testing.T, ctx context.Context, d *Driver, env gungnir.E
 	}
 	host := spec.Egress[len(spec.Egress)-1]
 	// For the record: the firewall's nameservers, and the gateway of each of its networks, which is that network's
-	// resolver. egress.sh asks the first nameserver only.
+	// resolver. egress.sh rewrites resolv.conf to name the default network's resolver alone, and asks it only.
 	if out, err := d.run(ctx, d.Podman, "exec", fw, "cat", "/etc/resolv.conf"); err == nil {
 		t.Logf("the firewall's resolv.conf (%s):\n%s", env.Project, out)
 	}
 	if out, err := d.run(ctx, d.Podman, "inspect", "--format", "{{range $k, $v := .NetworkSettings.Networks}}{{$k}} {{$v.Gateway}}\n{{end}}", fw); err == nil {
 		t.Logf("the firewall's networks and their gateways:\n%s", out)
 	}
+	probeResolvers(t, ctx, d, fw, spec, host)
+	askTheDefaultResolver(t, ctx, d, env, fw, spec)
 	out, err := d.run(ctx, d.Podman, "exec", fw, "getent", "ahostsv4", host)
 	if err != nil || strings.TrimSpace(string(out)) == "" {
 		t.Errorf("the refresh's lookup of %s, as root in the firewall of %s, fails: %v, %q; a refresh would keep the old addresses",
@@ -213,5 +219,253 @@ func refreshResolves(t *testing.T, ctx context.Context, d *Driver, env gungnir.E
 	}
 	if code, out := inSandbox(t, ctx, d, env, "getent", "ahostsv4", host); code != 0 || out == "" {
 		t.Errorf("%s does not resolve in the work container: exit %d, %q", host, code, out)
+	}
+}
+
+// resolverProbe is node in the firewall image: it prints the interface of the default route, each interface's IPv4
+// subnet, and, for each nameserver (argv 1, comma-separated) and each name (argv 2), what that nameserver alone
+// answers for the name: its addresses, or the error (ETIMEOUT when no answer comes back). The firewall image has
+// getent, which asks resolv.conf's list in order, and no nslookup, dig or ip; node's Resolver asks the server it
+// is given and nothing else.
+const resolverProbe = `const dns = require("dns"), os = require("os"), fs = require("fs");
+const servers = process.argv[1].split(","), names = process.argv[2].split(",");
+const routes = fs.readFileSync("/proc/net/route", "utf8").trim().split("\n").slice(1).map(l => l.trim().split(/\s+/));
+console.log("route default " + (routes.filter(f => f[1] === "00000000" && f[7] === "00000000").map(f => f[0]).join(",") || "none"));
+for (const [i, as] of Object.entries(os.networkInterfaces())) for (const a of as) if (a.family === "IPv4") console.log("interface " + i + " " + a.cidr);
+(async () => {
+  for (const s of servers) for (const n of names) {
+    const r = new dns.promises.Resolver({ timeout: 2000, tries: 1 });
+    r.setServers([s]);
+    try { console.log("answer " + s + " " + n + " " + (await r.resolve4(n)).join(",")); }
+    catch (e) { console.log("answer " + s + " " + n + " " + e.code); }
+  }
+})();`
+
+// probeResolvers records, as a log and not as assertions (firewall resolvers, task T1), which of the firewall's
+// nameservers answers which kind of name: an outside host the sandbox lists, a service's name, the model server's
+// name. It asks each network's resolver by its address, as root in the firewall (through the firewall's rules, which
+// allow DNS to the default network's resolver alone), and from a probe container of the firewall image on the same
+// networks without those rules, which shows what each resolver itself answers. It also records the interface of the
+// default route, each network's subnet, and which nameserver lies in which subnet.
+func probeResolvers(t *testing.T, ctx context.Context, d *Driver, fw string, spec gungnir.SandboxSpec, host string) {
+	t.Helper()
+	conf, err := d.run(ctx, d.Podman, "exec", fw, "cat", "/etc/resolv.conf")
+	if err != nil {
+		t.Logf("probe: the firewall's resolv.conf: %v", err)
+		return
+	}
+	var servers []string
+	for _, line := range strings.Split(string(conf), "\n") {
+		if f := strings.Fields(line); len(f) >= 2 && f[0] == "nameserver" {
+			servers = append(servers, f[1])
+		}
+	}
+	gateways, err := d.run(ctx, d.Podman, "inspect", "--format", "{{range .NetworkSettings.Networks}}{{.Gateway}}\n{{end}}", fw)
+	if err != nil {
+		t.Logf("probe: the firewall's gateways: %v", err)
+		return
+	}
+	// The firewall names one resolver in its resolv.conf; every network's gateway is a resolver too.
+	for _, g := range strings.Fields(string(gateways)) {
+		if !slices.Contains(servers, g) {
+			servers = append(servers, g)
+		}
+	}
+	kinds := map[string]string{host: "outside"}
+	names := []string{host}
+	for _, s := range spec.Services {
+		kinds[s.Name] = "service"
+		names = append(names, s.Name)
+	}
+	if spec.Models != nil {
+		kinds[spec.Models.Name] = "model server"
+		names = append(names, spec.Models.Name)
+	}
+	nets, err := d.run(ctx, d.Podman, "inspect", "--format",
+		"{{range $k, $v := .NetworkSettings.Networks}}{{$k}} {{$v.IPAddress}}/{{$v.IPPrefixLen}} {{$v.Gateway}}\n{{end}}", fw)
+	if err != nil {
+		t.Logf("probe: the firewall's networks: %v", err)
+		return
+	}
+	t.Logf("probe: the firewall's networks (name, address/prefix, gateway):\n%s", nets)
+	type network struct {
+		name   string
+		subnet *net.IPNet
+	}
+	var networks []network
+	for _, line := range strings.Split(strings.TrimSpace(string(nets)), "\n") {
+		if f := strings.Fields(line); len(f) >= 2 {
+			if _, subnet, err := net.ParseCIDR(f[1]); err == nil {
+				networks = append(networks, network{f[0], subnet})
+			}
+		}
+	}
+	args := []string{strings.Join(servers, ","), strings.Join(names, ",")}
+	inFW, err := d.run(ctx, d.Podman, append([]string{"exec", "-u", "0", fw, "node", "-e", resolverProbe}, args...)...)
+	t.Logf("probe: as root in the firewall (%s), through its rules (err %v):\n%s", fw, err, inFW)
+	probe := spec.Run + "-probe"
+	run := []string{"run", "--rm", "--pull=never", "--name", probe, "--label", LabelRun + "=" + spec.Run}
+	for _, n := range networks {
+		run = append(run, "--network", n.name)
+	}
+	t.Cleanup(func() { d.run(context.Background(), d.Podman, "rm", "-f", "-t", "0", probe) })
+	run = append(run, "--entrypoint", "node", d.cfg.ImagesOf(gungnir.SandboxSpec{}).Firewall, "-e", resolverProbe)
+	bare, err := d.run(ctx, d.Podman, append(run, args...)...)
+	t.Logf("probe: from a container of the firewall image on the same networks, without the rules (err %v):\n%s", err, bare)
+
+	answers := func(out []byte) map[string]string {
+		m := map[string]string{}
+		for _, line := range strings.Split(string(out), "\n") {
+			if f := strings.Fields(line); len(f) == 4 && f[0] == "answer" {
+				m[f[1]+" "+f[2]] = f[3]
+			}
+		}
+		return m
+	}
+	fwA, bareA := answers(inFW), answers(bare)
+	var table strings.Builder
+	fmt.Fprintf(&table, "%-16s %-40s %-14s %-24s %-24s %s\n", "nameserver", "network (its subnet holds it)", "kind", "name", "in the firewall", "without the rules")
+	for _, s := range servers {
+		owner := "none"
+		if ip := net.ParseIP(s); ip != nil {
+			for _, n := range networks {
+				if n.subnet.Contains(ip) {
+					owner = n.name + " " + n.subnet.String()
+				}
+			}
+		}
+		for _, n := range names {
+			fmt.Fprintf(&table, "%-16s %-40s %-14s %-24s %-24s %s\n", s, owner, kinds[n], n, fwA[s+" "+n], bareA[s+" "+n])
+		}
+	}
+	t.Logf("probe: which nameserver answers which name (%s):\n%s", spec.Run, table.String())
+}
+
+// askTheDefaultResolver checks, in the firewall of env, the rule of the firewall resolvers change: one resolver,
+// the default network's (its gateway), answers every name. Every listed host, service and the model server
+// resolves in the work container; the firewall's resolv.conf (which its own lookups read) names that resolver
+// alone; the rules allow port 53 to it alone; and the DNS the firewall sends (its own lookups, as root, and
+// dnsmasq's forwarding of the services' names, as nobody) reaches no other address. That last is counted with
+// rules the test inserts at the top of OUTPUT, which match and count but decide nothing, and removes after.
+func askTheDefaultResolver(t *testing.T, ctx context.Context, d *Driver, env gungnir.Env, fw string, spec gungnir.SandboxSpec) {
+	t.Helper()
+	inFW := func(argv ...string) string {
+		t.Helper()
+		out, err := d.run(ctx, d.Podman, append([]string{"exec", fw}, argv...)...)
+		if err != nil {
+			t.Fatalf("%v in the firewall: %v", argv, err)
+		}
+		return string(out)
+	}
+	var nsOut string
+	var gateways []string
+	nets, err := d.run(ctx, d.Podman, "inspect", "--format", "{{range $k, $v := .NetworkSettings.Networks}}{{$k}} {{$v.Gateway}}\n{{end}}", fw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, line := range strings.Split(strings.TrimSpace(string(nets)), "\n") {
+		if f := strings.Fields(line); len(f) == 2 {
+			gateways = append(gateways, f[1])
+			if strings.HasSuffix(f[0], "_default") {
+				nsOut = f[1]
+			}
+		}
+	}
+	if nsOut == "" {
+		t.Fatalf("the firewall of %s has no default network: %s", env.Project, nets)
+	}
+	names := append([]string{}, spec.Egress...)
+	for _, s := range spec.Services {
+		names = append(names, s.Name)
+	}
+	if spec.Models != nil {
+		names = append(names, spec.Models.Name)
+	}
+	for _, name := range names {
+		if code, out := inSandbox(t, ctx, d, env, "getent", "ahostsv4", name); code != 0 || out == "" {
+			t.Errorf("%s does not resolve in the work container: exit %d, %q", name, code, out)
+		}
+	}
+	var servers []string
+	for _, line := range strings.Split(inFW("cat", "/etc/resolv.conf"), "\n") {
+		if f := strings.Fields(line); len(f) >= 2 && f[0] == "nameserver" {
+			servers = append(servers, f[1])
+		}
+	}
+	if !slices.Equal(servers, []string{nsOut}) {
+		t.Errorf("the firewall's resolv.conf names %v; want the default network's resolver %s alone", servers, nsOut)
+	}
+	// For the record: the work container's resolv.conf (its queries go to dnsmasq whatever it names).
+	_, workResolv := inSandbox(t, ctx, d, env, "cat", "/etc/resolv.conf")
+	t.Logf("the work container's resolv.conf (%s):\n%s", env.Project, workResolv)
+	// The work container shares the firewall's resolv.conf and hosts files, which the firewall's lookups read as
+	// root: the agent must not write either (a line in hosts would map a listed host to any address).
+	for _, file := range []string{"/etc/hosts", "/etc/resolv.conf"} {
+		code, out := inSandbox(t, ctx, d, env, "sh", "-c", "ls -ln "+file+"; id; echo x >> "+file)
+		t.Logf("the work container appends to %s (%s): exit %d, %q", file, env.Project, code, out)
+		if code == 0 {
+			t.Errorf("the work container's user can write %s, which the firewall reads as root: %q", file, out)
+		}
+	}
+	rules := inFW("iptables", "-S", "OUTPUT")
+	t.Logf("the firewall's OUTPUT rules (%s, the default network's resolver %s):\n%s", env.Project, nsOut, rules)
+	allowed := 0
+	for _, line := range strings.Split(rules, "\n") {
+		if strings.Contains(line, "--dport 53 ") && strings.HasSuffix(line, "-j ACCEPT") {
+			allowed++
+			if !strings.Contains(line, "-d "+nsOut+"/32 ") {
+				t.Errorf("a rule allows DNS to another address than %s: %s", nsOut, line)
+			}
+		}
+	}
+	if allowed != 2 {
+		t.Errorf("%d rules allow DNS; want 2, udp and tcp to %s", allowed, nsOut)
+	}
+
+	// The counting rules: one per protocol for any destination, and one per protocol and gateway.
+	var counting [][]string
+	for _, proto := range []string{"udp", "tcp"} {
+		counting = append(counting, []string{"-p", proto, "--dport", "53"})
+		for _, g := range gateways {
+			counting = append(counting, []string{"-p", proto, "-d", g, "--dport", "53"})
+		}
+	}
+	for _, rule := range counting {
+		inFW(append([]string{"iptables", "-I", "OUTPUT", "1"}, rule...)...)
+	}
+	defer func() {
+		for _, rule := range counting {
+			if _, err := d.run(context.Background(), d.Podman, append([]string{"exec", fw, "iptables", "-D", "OUTPUT"}, rule...)...); err != nil {
+				t.Errorf("removing the counting rule %v: %v", rule, err)
+			}
+		}
+	}()
+	for _, name := range names {
+		if out := inFW("getent", "ahostsv4", name); strings.TrimSpace(out) == "" {
+			t.Errorf("the firewall's own lookup of %s answers nothing", name)
+		}
+		if spec.Models != nil && name == spec.Models.Name || slices.ContainsFunc(spec.Services, func(s gungnir.Service) bool { return s.Name == name }) {
+			inSandbox(t, ctx, d, env, "getent", "ahostsv4", name) // through dnsmasq, which forwards it as nobody
+		}
+	}
+	counted := inFW("iptables", "-v", "-S", "OUTPUT")
+	t.Logf("the DNS the firewall sent, counted (%s):\n%s", env.Project, counted)
+	count := map[string]int{}
+	for _, line := range strings.Split(counted, "\n") {
+		f := strings.Fields(line)
+		if len(f) < 3 || !strings.Contains(line, "--dport 53 ") || strings.Contains(line, " -j ") {
+			continue
+		}
+		dest := "any"
+		if i := slices.Index(f, "-d"); i >= 0 {
+			dest = strings.TrimSuffix(f[i+1], "/32")
+		}
+		if i := slices.Index(f, "-c"); i >= 0 && i+1 < len(f) {
+			n, _ := strconv.Atoi(f[i+1])
+			count[dest] += n
+		}
+	}
+	if count["any"] == 0 || count[nsOut] != count["any"] {
+		t.Errorf("DNS packets the firewall sent: %d to %s of %d in all (%v); want every one to it", count[nsOut], nsOut, count["any"], count)
 	}
 }
