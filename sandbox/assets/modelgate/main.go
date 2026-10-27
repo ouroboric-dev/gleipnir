@@ -18,9 +18,9 @@
 //     streams for longer is not cut.
 //
 // Otherwise it answers 403 (method, path, upgrade, encoding or model), 413 (size), 400 (not such JSON), 408 (the
-// body was too slow) or 503 (no allow file, an empty one, or 8 requests already in flight), and the upstream never
-// sees the request. It passes the body it checked, byte for byte, and streams
-// the response as the upstream writes it.
+// body was too slow), 500 (the body's time limit could not be set or cleared) or 503 (no allow file, an empty one,
+// or 8 requests already in flight), and the upstream never sees the request. It closes the connection after each
+// refusal. It passes the body it checked, byte for byte, and streams the response as the upstream writes it.
 //
 // It is a standalone program with the standard library only, built in the image's builder stage; gleipnir embeds
 // its source (sandbox/models.go) and its tests build it the same way.
@@ -53,7 +53,7 @@ const (
 )
 
 // bodyWindowOverride is empty in every build of the image. A test sets it at link time (-X main.bodyWindowOverride=300ms)
-// to wait less than 60 seconds; no flag or environment variable can.
+// to wait less than 60 seconds; it can only shorten the window, and no flag or environment variable can set it.
 var bodyWindowOverride string
 
 func main() {
@@ -109,7 +109,7 @@ type gate struct {
 
 func newGate(up *url.URL, allow string) *gate {
 	window := bodyWindow
-	if d, err := time.ParseDuration(bodyWindowOverride); err == nil && d > 0 {
+	if d, err := time.ParseDuration(bodyWindowOverride); err == nil && d > 0 && d < bodyWindow {
 		window = d
 	}
 	return &gate{allow: allow, slots: make(chan struct{}, maxInFlight), window: window, proxy: &httputil.ReverseProxy{
@@ -146,19 +146,20 @@ func (g *gate) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case g.slots <- struct{}{}:
 		defer func() { <-g.slots }()
 	default:
-		g.refuse(w, r, http.StatusServiceUnavailable, "8 requests are in flight; try again")
+		g.refuse(w, r, http.StatusServiceUnavailable, fmt.Sprintf("%d requests are in flight; try again", maxInFlight))
 		return
 	}
 	// The deadline bounds the read of the body and is cleared after it, so it never cuts the response.
 	rc := http.NewResponseController(w)
-	_ = rc.SetReadDeadline(time.Now().Add(g.window))
+	if err := rc.SetReadDeadline(time.Now().Add(g.window)); err != nil {
+		g.refuse(w, r, http.StatusInternalServerError, "the body's time limit could not be set")
+		return
+	}
 	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxBody))
-	_ = rc.SetReadDeadline(time.Time{})
+	clearErr := rc.SetReadDeadline(time.Time{})
 	if err != nil {
 		if errors.Is(err, os.ErrDeadlineExceeded) {
-			// Close after the answer: the server would otherwise wait for the rest of the body to reuse the connection.
-			w.Header().Set("Connection", "close")
-			g.refuse(w, r, http.StatusRequestTimeout, "the body did not arrive within 60 seconds")
+			g.refuse(w, r, http.StatusRequestTimeout, fmt.Sprintf("the body did not arrive within %d seconds", int(bodyWindow.Seconds())))
 			return
 		}
 		var tooLarge *http.MaxBytesError
@@ -167,6 +168,10 @@ func (g *gate) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		g.refuse(w, r, http.StatusBadRequest, "the body could not be read")
+		return
+	}
+	if clearErr != nil { // a deadline left set would cut the response
+		g.refuse(w, r, http.StatusInternalServerError, "the body's time limit could not be cleared")
 		return
 	}
 	asked, err := modelOf(body)
@@ -255,8 +260,11 @@ func modelOf(body []byte) (string, error) {
 }
 
 // refuse answers status with a JSON error in the shape llama-server uses, and logs the refusal without the body.
+// It closes the connection after the answer: for a body not read yet, net/http would otherwise drain it, with no
+// deadline, before it wrote the answer, and a client that stalls would hold the connection for good.
 func (g *gate) refuse(w http.ResponseWriter, r *http.Request, status int, why string) {
 	log.Printf("refused %s %q: %d, %s", r.Method, r.RequestURI, status, why)
+	w.Header().Set("Connection", "close")
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	b, _ := json.Marshal(map[string]any{"error": map[string]any{"code": status, "message": "ygg-modelgate: " + why, "type": "ygg_modelgate"}})

@@ -593,3 +593,52 @@ func TestModelGateWindowDoesNotCutAStream(t *testing.T) {
 		t.Errorf("the rest of the stream after the window: %q, %v", rest, err)
 	}
 }
+
+// stalledRequest sends a request whose body stalls (the headers say 100 bytes, 4 arrive) over a bare connection and
+// returns the status of the answer, or fails when none comes within 3 seconds: well after the 300 ms window, and
+// well before the 10 s the connection otherwise allows.
+func stalledRequest(t *testing.T, base, target string) int {
+	t.Helper()
+	conn, err := net.Dial("tcp", strings.TrimPrefix(base, "http://"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { conn.Close() })
+	_ = conn.SetDeadline(time.Now().Add(3 * time.Second))
+	fmt.Fprintf(conn, "POST %s HTTP/1.1\r\nHost: x\r\nContent-Type: application/json\r\nContent-Length: 100\r\n\r\n{\"mo", target)
+	resp, err := http.ReadResponse(bufio.NewReader(conn), nil)
+	if err != nil {
+		t.Fatalf("no answer to a stalled body on %s: %v", target, err)
+	}
+	resp.Body.Close()
+	return resp.StatusCode
+}
+
+// A refusal made before the body is read answers a client whose body stalls: net/http would otherwise drain the
+// unread body, with no deadline, before it wrote the answer.
+func TestModelGateRefusesAStalledBodyPromptly(t *testing.T) {
+	up, entered, release, _ := holdingUpstream(t, 8)
+	allow := filepath.Join(t.TempDir(), "allowed")
+	writeAllow(t, allow, "qwen-a")
+	base := gateWithWindow(t, up.URL, allow)
+	if got := stalledRequest(t, base, "/slots"); got != http.StatusForbidden {
+		t.Errorf("a stalled body on a refused path: %d, want 403", got)
+	}
+	// Hold 8 requests, so a ninth is refused for the cap.
+	for i := 0; i < 8; i++ {
+		go func() {
+			if resp, err := http.Post(base+"/v1/chat/completions", "application/json", strings.NewReader(`{"model":"qwen-a"}`)); err == nil {
+				resp.Body.Close()
+			}
+		}()
+	}
+	for i := 0; i < 8; i++ {
+		<-entered
+	}
+	if got := stalledRequest(t, base, "/v1/chat/completions"); got != http.StatusServiceUnavailable {
+		t.Errorf("a stalled body with 8 in flight: %d, want 503", got)
+	}
+	for i := 0; i < 8; i++ {
+		release <- struct{}{}
+	}
+}
