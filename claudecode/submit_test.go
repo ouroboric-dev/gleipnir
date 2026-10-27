@@ -238,3 +238,47 @@ func TestAnOutputGivenAsAJSONStringIsTheObjectItHolds(t *testing.T) {
 		t.Errorf("Submitted = %s, want the object the string held", r.Submitted)
 	}
 }
+
+// The streams in testdata/stream-submit-capped*.jsonl end as claude -p ends a session at --max-turns: a result event
+// of subtype error_max_turns with no result text. The last assistant message says something, then reads a file. In
+// capped.jsonl the one submit call is refused; in capped-valid.jsonl it is accepted.
+func TestErrorMaxTurnsWithoutAValidSubmitIsATurnLimit(t *testing.T) {
+	r, err := runSession(t, &session{stream: fixture(t, "stream-submit-capped.jsonl")}, func(tk *gungnir.Task) { tk.MaxTurns = 20 })
+	if err != nil {
+		t.Fatalf("Run() = %v, want a failed result", err)
+	}
+	const want = "the session reached its turn cap (20 turns) without handing back its output"
+	if r.Status != gungnir.StatusFailed || r.Failure != gungnir.FailureTurnLimit || r.Summary != want || r.Output != "I read the handler and its tests; no finding yet." || r.Submitted != nil {
+		t.Errorf("Result = %+v\nwant failed, turn-limit, summary %q and the last assistant text as its notes", r, want)
+	}
+	if u := r.Usage; u.Turns != 20 || u.CostUSD != 0.4189 || u.InTok != 40+13134 || u.OutTok != 1970 || u.CacheTok != 226776 {
+		t.Errorf("usage = %+v, want the result event's numbers", u)
+	}
+}
+
+func TestErrorMaxTurnsAfterAValidSubmitIsASuccess(t *testing.T) {
+	r, err := runSession(t, &session{stream: fixture(t, "stream-submit-capped-valid.jsonl")}, func(tk *gungnir.Task) { tk.MaxTurns = 20 })
+	if err != nil || r.Status != gungnir.StatusOK || r.Failure != "" || !strings.Contains(string(r.Submitted), "spec-1") || r.Usage.Turns != 20 {
+		t.Errorf("Result = %+v, %v; want ok with the submitted review", r, err)
+	}
+	// Another failure after a valid submit stays what it was: only the turn cap is the session's own end.
+	stream := strings.Replace(fixture(t, "stream-submit-capped-valid.jsonl"), `"subtype":"error_max_turns"`, `"subtype":"error_during_execution"`, 1)
+	r, err = runSession(t, &session{stream: stream}, func(tk *gungnir.Task) { tk.MaxTurns = 20 })
+	if err != nil || r.Status != gungnir.StatusFailed || r.Failure != gungnir.FailureAgent {
+		t.Errorf("error_during_execution after a valid submit: %+v, %v; want a failed result of kind agent", r, err)
+	}
+}
+
+// A session without a contract, or without a cap of ours, hands nothing back to wait for: its turn limit stays an
+// agent failure, as before.
+func TestErrorMaxTurnsWithoutAContractOrACapIsAnAgentFailure(t *testing.T) {
+	for name, mod := range map[string]func(*gungnir.Task){
+		"no contract": func(tk *gungnir.Task) { tk.MaxTurns, tk.Output = 20, "" },
+		"no cap":      func(tk *gungnir.Task) { tk.MaxTurns = 0 },
+	} {
+		r, err := runSession(t, &session{stream: fixture(t, "stream-submit-capped.jsonl")}, mod)
+		if err != nil || r.Status != gungnir.StatusFailed || r.Failure != gungnir.FailureAgent || r.Summary != "error_max_turns" || r.Output != "" {
+			t.Errorf("%s: %+v, %v; want a failed result of kind agent saying error_max_turns", name, r, err)
+		}
+	}
+}
