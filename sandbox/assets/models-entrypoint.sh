@@ -18,11 +18,18 @@ bad() {
 case "$port" in '' | *[!0-9]* | 0*) bad ;; esac
 if [ "${#port}" -gt 5 ] || [ "$port" -gt 65535 ] || [ "$port" -eq 8080 ]; then bad; fi
 
+# The trap comes first, so a TERM during the start is passed on. It stops the programs started so far: it asks the
+# shell for its jobs, not $server and $gate, which are not set yet when the TERM arrives between a start and its
+# assignment.
+# shellcheck disable=SC2046,SC2329 # SC2329: the traps call it. SC2046: the process ids are numbers, and none is no word
+stop() { kill -TERM $(jobs -p) 2>/dev/null; wait; exit "$1"; }
+trap 'stop 143' TERM
+trap 'stop 130' INT
+
 llama-server --models-preset /etc/ygg-models/preset.ini --models-max 1 --host 0.0.0.0 --port 8080 &
 server=$!
 ygg-modelgate -listen ":${port}" -upstream http://127.0.0.1:8080 -allow /etc/ygg-models/allowed &
 gate=$!
-trap 'kill -TERM "$server" "$gate" 2>/dev/null' TERM INT
 
 wait -n "$server" "$gate"
 code=$?

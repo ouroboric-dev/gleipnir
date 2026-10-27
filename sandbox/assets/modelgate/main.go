@@ -12,10 +12,15 @@
 //  2. The body is at most 32 MiB of UTF-8 JSON: one object, with one key "model" whose value is a string.
 //  3. That string equals the trimmed content of the allow file, which it reads on each request, so a new run's
 //     model needs no restart.
+//  4. At most 8 requests are in flight: a request holds a slot from before its body is read until its response
+//     ends, so the bodies held in memory are at most 8 times 32 MiB.
+//  5. The body arrives within 60 seconds of the headers. The limit is on reading the body only; a response that
+//     streams for longer is not cut.
 //
-// Otherwise it answers 403 (method, path, upgrade, encoding or model), 413 (size), 400 (not such JSON) or 503 (no allow file, or an
-// empty one), and the upstream never sees the request. It passes the body it checked, byte for byte, and streams
-// the response as the upstream writes it.
+// Otherwise it answers 403 (method, path, upgrade, encoding or model), 413 (size), 400 (not such JSON), 408 (the
+// body was too slow), 500 (the body's time limit could not be set or cleared) or 503 (no allow file, an empty one,
+// or 8 requests already in flight), and the upstream never sees the request. It closes the connection after each
+// refusal. It passes the body it checked, byte for byte, and streams the response as the upstream writes it.
 //
 // It is a standalone program with the standard library only, built in the image's builder stage; gleipnir embeds
 // its source (sandbox/models.go) and its tests build it the same way.
@@ -42,7 +47,14 @@ import (
 const (
 	chatPath = "/v1/chat/completions"
 	maxBody  = 32 << 20 // 32 MiB
+
+	maxInFlight = 8                // requests passed at once; the next gets 503
+	bodyWindow  = 60 * time.Second // from the headers to the last byte of the body
 )
+
+// bodyWindowOverride is empty in every build of the image. A test sets it at link time (-X main.bodyWindowOverride=300ms)
+// to wait less than 60 seconds; it can only shorten the window, and no flag or environment variable can set it.
+var bodyWindowOverride string
 
 func main() {
 	listen := flag.String("listen", "", "the address to listen on, such as :8090")
@@ -89,12 +101,18 @@ func checkFlags(listen, upstream, allow string, extra int) (*url.URL, error) {
 
 // gate is the handler: it checks a request and passes it to proxy.
 type gate struct {
-	allow string
-	proxy *httputil.ReverseProxy
+	allow  string
+	proxy  *httputil.ReverseProxy
+	slots  chan struct{} // a token per request in flight
+	window time.Duration // how long a body may take
 }
 
 func newGate(up *url.URL, allow string) *gate {
-	return &gate{allow: allow, proxy: &httputil.ReverseProxy{
+	window := bodyWindow
+	if d, err := time.ParseDuration(bodyWindowOverride); err == nil && d > 0 && d < bodyWindow {
+		window = d
+	}
+	return &gate{allow: allow, slots: make(chan struct{}, maxInFlight), window: window, proxy: &httputil.ReverseProxy{
 		Rewrite: func(r *httputil.ProxyRequest) {
 			r.SetURL(up)
 			r.Out.URL.Path, r.Out.URL.RawPath, r.Out.URL.RawQuery, r.Out.URL.ForceQuery = chatPath, "", "", false
@@ -124,14 +142,36 @@ func (g *gate) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		g.refuse(w, r, http.StatusRequestEntityTooLarge, "the body is above 32 MiB")
 		return
 	}
+	select {
+	case g.slots <- struct{}{}:
+		defer func() { <-g.slots }()
+	default:
+		g.refuse(w, r, http.StatusServiceUnavailable, fmt.Sprintf("%d requests are in flight; try again", maxInFlight))
+		return
+	}
+	// The deadline bounds the read of the body and is cleared after it, so it never cuts the response.
+	rc := http.NewResponseController(w)
+	if err := rc.SetReadDeadline(time.Now().Add(g.window)); err != nil {
+		g.refuse(w, r, http.StatusInternalServerError, "the body's time limit could not be set")
+		return
+	}
 	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxBody))
+	clearErr := rc.SetReadDeadline(time.Time{})
 	if err != nil {
+		if errors.Is(err, os.ErrDeadlineExceeded) {
+			g.refuse(w, r, http.StatusRequestTimeout, fmt.Sprintf("the body did not arrive within %d seconds", int(bodyWindow.Seconds())))
+			return
+		}
 		var tooLarge *http.MaxBytesError
 		if errors.As(err, &tooLarge) {
 			g.refuse(w, r, http.StatusRequestEntityTooLarge, "the body is above 32 MiB")
 			return
 		}
 		g.refuse(w, r, http.StatusBadRequest, "the body could not be read")
+		return
+	}
+	if clearErr != nil { // a deadline left set would cut the response
+		g.refuse(w, r, http.StatusInternalServerError, "the body's time limit could not be cleared")
 		return
 	}
 	asked, err := modelOf(body)
@@ -220,8 +260,11 @@ func modelOf(body []byte) (string, error) {
 }
 
 // refuse answers status with a JSON error in the shape llama-server uses, and logs the refusal without the body.
+// It closes the connection after the answer: for a body not read yet, net/http would otherwise drain it, with no
+// deadline, before it wrote the answer, and a client that stalls would hold the connection for good.
 func (g *gate) refuse(w http.ResponseWriter, r *http.Request, status int, why string) {
 	log.Printf("refused %s %q: %d, %s", r.Method, r.RequestURI, status, why)
+	w.Header().Set("Connection", "close")
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	b, _ := json.Marshal(map[string]any{"error": map[string]any{"code": status, "message": "ygg-modelgate: " + why, "type": "ygg_modelgate"}})

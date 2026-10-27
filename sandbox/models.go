@@ -17,14 +17,41 @@ import (
 // started by assets/models-entrypoint.sh. Its bases are pinned by digest in assets/Containerfile.models. The three
 // files are embedded in assets.go.
 
-// ModelsImage returns the local tag of the model server's image: a hash of its Containerfile, its entrypoint and the
-// gate's source, so a change to any of them is a new image, never a silently changed one.
-func ModelsImage() string { return modelsTag(modelsContainerfile, modelsEntrypoint, modelGateSource) }
+// defaultCUDAArch is the architecture the Containerfile builds for when CUDA_ARCH is not set.
+const defaultCUDAArch = "89"
 
-func modelsTag(containerfile, entrypoint, gate string) string {
+// ModelsImage returns the local tag of the model server's image for the default architecture: a hash of its
+// Containerfile, its entrypoint and the gate's source, so a change to any of them is a new image, never a silently
+// changed one.
+func ModelsImage() string {
+	return modelsTag(modelsContainerfile, modelsEntrypoint, modelGateSource, "")
+}
+
+// ModelsImageFor returns the tag of the image built for cudaArch. Empty and the default, 89, give ModelsImage's tag;
+// another valid value gives another tag, so an image built for another GPU never shares a tag with the default one.
+// It refuses a value BuildModels refuses.
+func ModelsImageFor(cudaArch string) (string, error) {
+	if err := checkCUDAArch(cudaArch); err != nil {
+		return "", err
+	}
+	return modelsTag(modelsContainerfile, modelsEntrypoint, modelGateSource, cudaArch), nil
+}
+
+func checkCUDAArch(cudaArch string) error {
+	if cudaArch != "" && !cudaArchs.MatchString(cudaArch) {
+		return fmt.Errorf("the CUDA architecture %q is not a list such as 89, 90a or 86;89-real", cudaArch)
+	}
+	return nil
+}
+
+// modelsTag hashes the three files, and the architecture when it is not the default.
+func modelsTag(containerfile, entrypoint, gate, cudaArch string) string {
 	h := sha256.New()
 	for _, part := range []string{containerfile, entrypoint, gate} {
 		fmt.Fprintf(h, "%d:%s\n", len(part), part)
+	}
+	if cudaArch != "" && cudaArch != defaultCUDAArch {
+		fmt.Fprintf(h, "cuda-arch:%d:%s\n", len(cudaArch), cudaArch)
 	}
 	return "localhost/ygg-models:" + hex.EncodeToString(h.Sum(nil))[:12]
 }
@@ -66,8 +93,9 @@ func modelsBases() []string {
 // (such as 89 or 86;89); empty leaves the Containerfile's default, 89. Like Build, it is for ygg models build alone:
 // a run never builds.
 func (d *Driver) BuildModels(ctx context.Context, cudaArch string) (string, error) {
-	if cudaArch != "" && !cudaArchs.MatchString(cudaArch) {
-		return "", fmt.Errorf("the CUDA architecture %q is not a list such as 89, 90a or 86;89-real", cudaArch)
+	tag, err := ModelsImageFor(cudaArch)
+	if err != nil {
+		return "", err
 	}
 	for _, base := range modelsBases() {
 		if !gungnir.ValidImage(base) {
@@ -97,7 +125,6 @@ func (d *Driver) BuildModels(ctx context.Context, cudaArch string) (string, erro
 			return "", err
 		}
 	}
-	tag := ModelsImage()
 	args := []string{"build", "--pull=never", "-t", tag, "-f", filepath.Join(dir, "Containerfile")}
 	if cudaArch != "" {
 		args = append(args, "--build-arg", "CUDA_ARCH="+cudaArch)

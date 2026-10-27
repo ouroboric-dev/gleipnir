@@ -4,8 +4,8 @@
 #   gate    ygg-modelgate from modelgate/main.go: the standard library only
 #   (last)  the CUDA runtime, both programs and the entrypoint, which starts both and exits when either exits
 # Every base is pinned by digest here (the digest of its multi-arch index). The driver (BuildModels) pulls them with
-# the isolated registry auth and builds with --pull=never. The tag is a hash of this file, the entrypoint and the
-# gate's source, so a new pin here is a new image.
+# the isolated registry auth and builds with --pull=never. The tag is a hash of this file, the entrypoint, the
+# gate's source, and CUDA_ARCH when it is not 89, so a new pin here is a new image.
 # The image is built on the host that runs it (ygg models build), so the CPU code is native to that host.
 ARG CUDA_DEVEL_IMAGE=docker.io/nvidia/cuda:12.9.1-devel-ubuntu22.04@sha256:bd4e2680a261c212f1e2fea241606f71497dc67a417f73175d794ec8212b5ba8
 ARG CUDA_RUNTIME_IMAGE=docker.io/nvidia/cuda:12.9.1-runtime-ubuntu22.04@sha256:d90541b92124899904e0860a4ac1955606b3bc45ad6cc9dab16567fd1111e326
