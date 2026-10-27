@@ -78,7 +78,8 @@ type Outcome struct {
 	Provider   string         `yaml:"provider"`    // who served the model, as a real adapter reports it
 	CLIVersion string         `yaml:"cli_version"` // the agent tool's version, as a real adapter reports it
 	Usage      Usage          `yaml:"usage"`
-	// Failure is how a failed result failed: agent (the default), transient or quota.
+	// Failure is how a failed result failed: agent (the default), transient, quota or turn-limit (a session at its
+	// turn cap without a valid submit, whose output holds its notes).
 	Failure gungnir.FailureKind `yaml:"failure"`
 	// Output is the session's final answer, as written. Report is the same answer as a reviewer
 	// writes it: a findings document built from these findings. A step sets at most one of them.
@@ -154,9 +155,13 @@ func (st Step) check() error {
 			return errors.New("a result with a failure kind has status failed")
 		}
 		switch o.Failure {
-		case "", gungnir.FailureAgent, gungnir.FailureTransient, gungnir.FailureQuota:
+		case "", gungnir.FailureAgent, gungnir.FailureTransient, gungnir.FailureQuota, gungnir.FailureTurnLimit:
 		default:
-			return fmt.Errorf("result failure %q is not agent, transient or quota", o.Failure)
+			return fmt.Errorf("result failure %q is not agent, transient, quota or turn-limit", o.Failure)
+		}
+		if o.Failure == gungnir.FailureTurnLimit && o.Submitted != "" {
+			// A real adapter reports a turn limit only for a session without a valid submit.
+			return errors.New("a turn-limit result has no submitted document")
 		}
 	}
 	switch st.Kind {

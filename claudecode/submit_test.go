@@ -238,3 +238,72 @@ func TestAnOutputGivenAsAJSONStringIsTheObjectItHolds(t *testing.T) {
 		t.Errorf("Submitted = %s, want the object the string held", r.Submitted)
 	}
 }
+
+// The streams in testdata/stream-submit-capped*.jsonl end as claude -p ends a session at --max-turns: a result event
+// of subtype error_max_turns with no result text. The last assistant message says something, then reads a file. In
+// capped.jsonl the one submit call is refused; in capped-valid.jsonl it is accepted.
+func TestErrorMaxTurnsWithoutAValidSubmitIsATurnLimit(t *testing.T) {
+	r, err := runSession(t, &session{stream: fixture(t, "stream-submit-capped.jsonl")}, func(tk *gungnir.Task) { tk.MaxTurns = 20 })
+	if err != nil {
+		t.Fatalf("Run() = %v, want a failed result", err)
+	}
+	const want = "the session reached its turn cap (20 turns) without handing back its output"
+	if r.Status != gungnir.StatusFailed || r.Failure != gungnir.FailureTurnLimit || r.Summary != want || r.Output != "I read the handler and its tests; no finding yet." || r.Submitted != nil {
+		t.Errorf("Result = %+v\nwant failed, turn-limit, summary %q and the last assistant text as its notes", r, want)
+	}
+	if u := r.Usage; u.Turns != 20 || u.CostUSD != 0.4189 || u.InTok != 40+13134 || u.OutTok != 1970 || u.CacheTok != 226776 {
+		t.Errorf("usage = %+v, want the result event's numbers", u)
+	}
+}
+
+func TestErrorMaxTurnsAfterAValidSubmitIsASuccess(t *testing.T) {
+	r, err := runSession(t, &session{stream: fixture(t, "stream-submit-capped-valid.jsonl")}, func(tk *gungnir.Task) { tk.MaxTurns = 20 })
+	if err != nil || r.Status != gungnir.StatusOK || r.Failure != "" || !strings.Contains(string(r.Submitted), "spec-1") || r.Usage.Turns != 20 {
+		t.Errorf("Result = %+v, %v; want ok with the submitted review", r, err)
+	}
+	// Another failure after a valid submit stays what it was: only the turn cap is the session's own end.
+	stream := strings.Replace(fixture(t, "stream-submit-capped-valid.jsonl"), `"subtype":"error_max_turns"`, `"subtype":"error_during_execution"`, 1)
+	r, err = runSession(t, &session{stream: stream}, func(tk *gungnir.Task) { tk.MaxTurns = 20 })
+	if err != nil || r.Status != gungnir.StatusFailed || r.Failure != gungnir.FailureAgent {
+		t.Errorf("error_during_execution after a valid submit: %+v, %v; want a failed result of kind agent", r, err)
+	}
+}
+
+// A session without a contract, or without a cap of ours, hands nothing back to wait for: its turn limit stays an
+// agent failure, as before.
+func TestErrorMaxTurnsWithoutAContractOrACapIsAnAgentFailure(t *testing.T) {
+	for name, mod := range map[string]func(*gungnir.Task){
+		"no contract": func(tk *gungnir.Task) { tk.MaxTurns, tk.Output = 20, "" },
+		"no cap":      func(tk *gungnir.Task) { tk.MaxTurns = 0 },
+	} {
+		r, err := runSession(t, &session{stream: fixture(t, "stream-submit-capped.jsonl")}, mod)
+		if err != nil || r.Status != gungnir.StatusFailed || r.Failure != gungnir.FailureAgent || r.Summary != "error_max_turns" || r.Output != "" {
+			t.Errorf("%s: %+v, %v; want a failed result of kind agent saying error_max_turns", name, r, err)
+		}
+	}
+}
+
+// A line whose message has another shape, such as a user message whose content is a string, is still read as an
+// event: the result after it counts, and so does the assistant text before it.
+func TestALineWithAnotherMessageShapeIsStillRead(t *testing.T) {
+	lines := strings.Split(strings.TrimSpace(fixture(t, "stream-submit-capped.jsonl")), "\n")
+	odd := `{"type":"user","message":{"role":"user","content":"a prompt as a plain string"},"session_id":"s1"}`
+	stream := strings.Join(append(lines[:len(lines)-1], odd, lines[len(lines)-1]), "\n") + "\n"
+	r, err := runSession(t, &session{stream: stream}, func(tk *gungnir.Task) { tk.MaxTurns = 20 })
+	if err != nil || r.Failure != gungnir.FailureTurnLimit || r.Output != "I read the handler and its tests; no finding yet." {
+		t.Errorf("Run() = %+v, %v; want a turn limit with the last assistant text", r, err)
+	}
+	// The result line itself with a message of another shape.
+	res := strings.Replace(lines[len(lines)-1], `{"type":"result",`, `{"type":"result","message":"text",`, 1)
+	stream = strings.Join(append(lines[:len(lines)-1], res), "\n") + "\n"
+	if r, err := runSession(t, &session{stream: stream}, func(tk *gungnir.Task) { tk.MaxTurns = 20 }); err != nil || r.Failure != gungnir.FailureTurnLimit {
+		t.Errorf("a result line with a string message: %+v, %v; want a turn limit", r, err)
+	}
+	// A session that printed that user line and died had started: an agent failure, not a tool that crashed at start.
+	f := &fake{stdout: odd + "\n", exit: 1}
+	tk := task(f)
+	tk.TranscriptDir = t.TempDir()
+	if _, err := agent().Run(context.Background(), tk); gungnir.FailureOf(err) != gungnir.FailureAgent {
+		t.Errorf("a session that died after a user line: %v (kind %q), want an agent failure", err, gungnir.FailureOf(err))
+	}
+}

@@ -165,7 +165,7 @@ func (a *Agent) Run(ctx context.Context, t gungnir.Task) (gungnir.Result, error)
 		return gungnir.Result{}, &gungnir.SessionError{Kind: gungnir.FailureAgent, Usage: used,
 			Err: fmt.Errorf("claude-code: the session wrote more than %d MiB of output", maxStream>>20)}
 	}
-	r, seen, err := parse(bytes.NewReader(out.Bytes()))
+	r, end, seen, err := parse(bytes.NewReader(out.Bytes()))
 	if err != nil {
 		return gungnir.Result{}, &gungnir.SessionError{Kind: unfinished(seen, res.ExitCode, string(errOut.Bytes())), Usage: used,
 			Err: fmt.Errorf("claude-code: %w (exit %d; stderr: %s)", err, res.ExitCode, tail(string(errOut.Bytes())))}
@@ -177,6 +177,20 @@ func (a *Agent) Run(ctx context.Context, t gungnir.Task) (gungnir.Result, error)
 		// blind. The session's usage goes with it.
 		if r.Submitted, err = lastSubmit(ctx, t, out.Bytes()); err != nil {
 			return gungnir.Result{}, &gungnir.SessionError{Kind: gungnir.FailureAgent, Usage: r.Usage, Err: fmt.Errorf("claude-code: %w", err)}
+		}
+		// A session stopped at its cap handed its output back if it submitted a valid one before, and is a success, as
+		// in opencode; without one it is a turn limit. The result event of error_max_turns holds no text, so the last
+		// thing the session said is its output, or its notes.
+		if end.maxTurns && t.MaxTurns > 0 {
+			r.Output = strings.TrimSpace(end.last)
+			if r.Submitted != nil {
+				r.Status, r.Failure, r.Summary = gungnir.StatusOK, "", clip(end.last)
+			} else {
+				r = failure.TurnLimit(r, t.MaxTurns)
+			}
+			if err := r.Validate(); err != nil {
+				return gungnir.Result{}, &gungnir.SessionError{Kind: gungnir.FailureAgent, Usage: r.Usage, Err: fmt.Errorf("claude-code: %w", err)}
+			}
 		}
 	}
 	return r, nil
@@ -299,6 +313,10 @@ type event struct {
 	Subtype string `json:"subtype"`
 	Version string `json:"claude_code_version"`
 
+	// Message is read only for an assistant event: a message of another shape, such as a user message whose
+	// content is a string, must not make the whole line unreadable.
+	Message json.RawMessage `json:"message"`
+
 	IsError      *bool           `json:"is_error"`
 	Result       string          `json:"result"`
 	NumTurns     *int64          `json:"num_turns"`
@@ -312,13 +330,20 @@ type event struct {
 	} `json:"usage"`
 }
 
+// ending is what a stream says of its session's end beside the result: whether the session stopped at its turn
+// limit, and the text of its last assistant message that said anything.
+type ending struct {
+	maxTurns bool
+	last     string
+}
+
 // parse reads a session's stream and returns what its result event says; seen reports whether the
 // stream held any event at all. Anything the result event should hold and doesn't is an error:
 // missing usage is never read as zero (spec §4.6).
-func parse(r io.Reader) (res gungnir.Result, seen bool, err error) {
+func parse(r io.Reader) (res gungnir.Result, end ending, seen bool, err error) {
 	sc := bufio.NewScanner(r)
 	sc.Buffer(make([]byte, 1<<20), 64<<20)
-	var version string
+	var version, lastID string
 	var final *event
 	for sc.Scan() {
 		line := bytes.TrimSpace(sc.Bytes())
@@ -335,20 +360,46 @@ func parse(r io.Reader) (res gungnir.Result, seen bool, err error) {
 			if e.Subtype == "init" && e.Version != "" {
 				version = e.Version
 			}
+		case "assistant":
+			// The stream prints a message one content block per event, all with the message's id.
+			var m struct {
+				ID      string `json:"id"`
+				Content []struct {
+					Type string `json:"type"`
+					Text string `json:"text"`
+				} `json:"content"`
+			}
+			if json.Unmarshal(e.Message, &m) != nil {
+				continue
+			}
+			var said string
+			for _, b := range m.Content {
+				if b.Type == "text" {
+					said += b.Text
+				}
+			}
+			if strings.TrimSpace(said) == "" {
+				continue
+			}
+			if m.ID == "" || m.ID != lastID {
+				end.last = ""
+			}
+			end.last, lastID = end.last+said, m.ID
 		case "result":
 			ev := e
 			final = &ev
 		}
 	}
 	if err := sc.Err(); err != nil {
-		return gungnir.Result{}, seen, err
+		return gungnir.Result{}, end, seen, err
 	}
 	if final == nil {
-		return gungnir.Result{}, seen, errors.New("the session ended without a result event")
+		return gungnir.Result{}, end, seen, errors.New("the session ended without a result event")
 	}
+	end.maxTurns = final.Subtype == "error_max_turns"
 	u := final.Usage
 	if u == nil || u.Input == nil || u.Output == nil || u.CacheRead == nil || u.CacheCreation == nil || final.NumTurns == nil || final.TotalCost == nil || final.IsError == nil {
-		return gungnir.Result{}, seen, errors.New("the result event lacks usage, turns, cost or is_error; refusing to read missing numbers as zero")
+		return gungnir.Result{}, end, seen, errors.New("the result event lacks usage, turns, cost or is_error; refusing to read missing numbers as zero")
 	}
 	r2 := gungnir.Result{
 		Status:     gungnir.StatusOK,
@@ -371,12 +422,12 @@ func parse(r io.Reader) (res gungnir.Result, seen bool, err error) {
 			status, _ = strconv.Atoi(s)
 		}
 		// A turn limit or a crash inside the session is the agent's; only what the API said can be
-		// transient or a used-up quota.
+		// transient or a used-up quota. Run reports the turn limit of a session with a contract and a cap as turn-limit.
 		if final.Subtype == "success" {
 			r2.Failure = failure.Classify(status, final.Result)
 		}
 	}
-	return r2, seen, r2.Validate()
+	return r2, end, seen, r2.Validate()
 }
 
 func clip(s string) string {

@@ -283,14 +283,15 @@ steps:
 
 func TestScriptedRefusesAScriptThatNamesNoSuchFailure(t *testing.T) {
 	for name, script := range map[string]string{
-		"an unknown kind":           "steps:\n  a:\n    - error: x\n      kind: flaky\n",
-		"a kind on a hang":          "steps:\n  a:\n    - hang: true\n      kind: quota\n",
-		"a kind on a result":        "steps:\n  a:\n    - result: { status: ok }\n      kind: quota\n",
-		"usage beside a result":     "steps:\n  a:\n    - result: { status: ok }\n      usage: { in: 1 }\n",
-		"a failure on a success":    "steps:\n  a:\n    - result: { status: ok, failure: transient }\n",
-		"infra as a result failure": "steps:\n  a:\n    - result: { status: failed, failure: infra }\n",
-		"an unknown failure":        "steps:\n  a:\n    - result: { status: failed, failure: flaky }\n",
-		"output and report":         "steps:\n  a:\n    - result: { status: ok, output: x, report: [] }\n",
+		"an unknown kind":             "steps:\n  a:\n    - error: x\n      kind: flaky\n",
+		"a kind on a hang":            "steps:\n  a:\n    - hang: true\n      kind: quota\n",
+		"a kind on a result":          "steps:\n  a:\n    - result: { status: ok }\n      kind: quota\n",
+		"usage beside a result":       "steps:\n  a:\n    - result: { status: ok }\n      usage: { in: 1 }\n",
+		"a failure on a success":      "steps:\n  a:\n    - result: { status: ok, failure: transient }\n",
+		"infra as a result failure":   "steps:\n  a:\n    - result: { status: failed, failure: infra }\n",
+		"an unknown failure":          "steps:\n  a:\n    - result: { status: failed, failure: flaky }\n",
+		"output and report":           "steps:\n  a:\n    - result: { status: ok, output: x, report: [] }\n",
+		"a turn limit that submitted": "submits: true\nsteps:\n  a:\n    - result: { status: failed, failure: turn-limit, submitted: '{}' }\n",
 	} {
 		p := filepath.Join(t.TempDir(), "s.yaml")
 		os.WriteFile(p, []byte(script), 0o644)
@@ -356,5 +357,18 @@ func TestASubmittedDocumentNeedsASubmittingScript(t *testing.T) {
 		if _, err := Load(p); err == nil {
 			t.Errorf("%s: Load() = nil, want an error", name)
 		}
+	}
+}
+
+// Odin's tests script a session that reached its turn cap the way the real adapters report it.
+func TestAScriptedResultCanBeATurnLimit(t *testing.T) {
+	a := load(t, `
+steps:
+  review:
+    - result: { status: failed, failure: turn-limit, summary: "the session reached its turn cap (20 turns) without handing back its output", output: "I read the handler.", usage: { turns: 20 } }
+`)
+	r, err := run(t, a, "review", 1)
+	if err != nil || r.Status != gungnir.StatusFailed || r.Failure != gungnir.FailureTurnLimit || r.Output != "I read the handler." || r.Usage.Turns != 20 {
+		t.Errorf("Run() = %+v, %v; want a failed result of kind turn-limit with its notes", r, err)
 	}
 }

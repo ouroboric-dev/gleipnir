@@ -38,6 +38,17 @@ The harness: agent adapters, the devcontainer sandbox driver, policies and the c
   `gungnir.Submitter`; the scripted one by `submits: true` and a step's `submitted`. The `contract` package holds
   the suite every adapter passes. If a CLI cannot run the server, its adapter drops the config and Odin reads the
   strict whole answer.
+- Reports a session that reached its turn cap without a valid `submit` call as failed, of kind `turn-limit`
+  (change turn-cap), when its task has `Output` and `MaxTurns` set. `Summary` names the cap, `Output` holds the
+  session's last text as its notes, and `Usage` is as counted. `opencode` decides by its steps: `Usage.Turns` at or
+  over `MaxTurns`. At its step limit opencode runs one last step with the tools turned off, so the model can only
+  write. A compaction of the context prints a step of its own and counts against the steps; one at the cap is
+  followed by one more step, so the count can pass the cap (proof run 1 had 21 and 22 steps at 20). A count at or
+  over the cap therefore means the step without tools ran. `claude-code` decides by a result of subtype
+  `error_max_turns`, which holds no text: the notes are the text of the last assistant message that said
+  anything. A session that submitted a valid output before its cap is a success, with `Submitted` set. A session
+  without `Output` or `MaxTurns` is reported as before: `ok` from opencode, an `agent` failure from claude-code.
+  The scripted adapter accepts `failure: turn-limit` on a result without `submitted`.
 - Loads skills explicitly per task, from Havamal at a pinned version (spec §5.1).
 - Runs commands in sandboxes and applies policies: devcontainer hardening, managed settings and
   the egress firewall (spec §6).

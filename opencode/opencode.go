@@ -383,6 +383,13 @@ func (a *Agent) Run(ctx context.Context, t gungnir.Task) (gungnir.Result, error)
 		if r.Submitted, err = lastSubmit(ctx, t, out.Bytes()); err != nil {
 			return gungnir.Result{}, &gungnir.SessionError{Kind: gungnir.FailureAgent, Usage: used, Err: fmt.Errorf("opencode: %w", err)}
 		}
+		// At its step limit opencode runs one last step with the tools turned off, so a session that reaches the cap
+		// cannot submit any more. A compaction of the context prints a step of its own and counts against the steps; one
+		// at the cap is followed by one more step, so the count can pass the cap (proof run 1 had 21 and 22 steps at
+		// 20). A count at or over the cap therefore means the step without tools ran.
+		if r.Status == gungnir.StatusOK && r.Submitted == nil && t.MaxTurns > 0 && r.Usage.Turns >= int64(t.MaxTurns) {
+			r = failure.TurnLimit(r, t.MaxTurns)
+		}
 	}
 	return r, nil
 }

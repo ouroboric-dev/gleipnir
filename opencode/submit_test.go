@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -219,5 +220,45 @@ func TestAnOutputGivenAsAJSONStringIsTheObjectItHolds(t *testing.T) {
 	const want = `{"findings": [{"id": "spec-1", "source": "spec", "severity": "blocker", "location": "api/auth.go:42", "claim": "The signup route has no throttle.", "status": "open"}]}`
 	if string(r.Submitted) != want {
 		t.Errorf("Submitted = %s, want the object the string held", r.Submitted)
+	}
+}
+
+// The streams in testdata/stream-submit-capped*.jsonl have the shape of proof run 1's reviewer sessions at their cap
+// of 20 steps: 19 steps with tools, then the step opencode runs with the tools turned off, whose text starts with
+// "Maximum steps for this agent have been reached." In capped.jsonl the one submit call is refused; in
+// capped-valid.jsonl it is accepted.
+const cappedNotes = "Maximum steps for this agent have been reached.\n\n**Review (read-only).** I read the handler and its tests; no finding yet."
+
+func TestASessionAtItsTurnCapWithoutAValidSubmitIsATurnLimit(t *testing.T) {
+	// 20 steps against a cap of 20, and against a cap of 18: the count of steps can pass the cap (see Run).
+	for _, limit := range []int{20, 18} {
+		r, err := runSession(t, &session{stream: fixture(t, "stream-submit-capped.jsonl")}, func(tk *gungnir.Task) { tk.MaxTurns = limit })
+		if err != nil {
+			t.Fatalf("cap %d: Run() = %v, want a failed result", limit, err)
+		}
+		want := fmt.Sprintf("the session reached its turn cap (%d turns) without handing back its output", limit)
+		if r.Status != gungnir.StatusFailed || r.Failure != gungnir.FailureTurnLimit || r.Summary != want || r.Output != cappedNotes || r.Submitted != nil {
+			t.Errorf("cap %d: Result = %+v\nwant failed, turn-limit, summary %q and the last text as its notes", limit, r, want)
+		}
+		if r.Usage.Turns != 20 || r.Usage.InTok != 20*7 || !r.Usage.CostEstimated {
+			t.Errorf("cap %d: usage = %+v, want the 20 steps as counted", limit, r.Usage)
+		}
+	}
+}
+
+func TestASessionAtItsTurnCapIsUnchangedWithAValidSubmitWithoutAContractOrWithoutACap(t *testing.T) {
+	r, err := runSession(t, &session{stream: fixture(t, "stream-submit-capped-valid.jsonl")}, func(tk *gungnir.Task) { tk.MaxTurns = 20 })
+	if err != nil || r.Status != gungnir.StatusOK || r.Failure != "" || !strings.Contains(string(r.Submitted), "spec-1") {
+		t.Errorf("a valid submit before the cap: %+v, %v; want ok with the submitted review", r, err)
+	}
+	for name, mod := range map[string]func(*gungnir.Task){
+		"no contract":   func(tk *gungnir.Task) { tk.MaxTurns, tk.Output = 20, "" },
+		"no cap":        func(tk *gungnir.Task) { tk.MaxTurns = 0 },
+		"under the cap": func(tk *gungnir.Task) { tk.MaxTurns = 21 },
+	} {
+		r, err := runSession(t, &session{stream: fixture(t, "stream-submit-capped.jsonl")}, mod)
+		if err != nil || r.Status != gungnir.StatusOK || r.Failure != "" || r.Output != cappedNotes || r.Usage.Turns != 20 {
+			t.Errorf("%s: %+v, %v; want ok with the last text, as before", name, r, err)
+		}
 	}
 }

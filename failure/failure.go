@@ -6,6 +6,7 @@
 package failure
 
 import (
+	"fmt"
 	"regexp"
 
 	"github.com/ouroboric-dev/gungnir"
@@ -31,4 +32,13 @@ func Classify(status int, message string) gungnir.FailureKind {
 		return gungnir.FailureTransient
 	}
 	return gungnir.FailureAgent
+}
+
+// TurnLimit is r as a session that reached its turn cap of n turns without handing back its output: failed, of kind
+// turn-limit, with a summary that names the cap. Its Output, the session's last text, stays as its notes, for the
+// session that asks once more (spec §5).
+func TurnLimit(r gungnir.Result, n int) gungnir.Result {
+	r.Status, r.Failure = gungnir.StatusFailed, gungnir.FailureTurnLimit
+	r.Summary = fmt.Sprintf("the session reached its turn cap (%d turns) without handing back its output", n)
+	return r
 }
