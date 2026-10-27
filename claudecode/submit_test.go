@@ -282,3 +282,28 @@ func TestErrorMaxTurnsWithoutAContractOrACapIsAnAgentFailure(t *testing.T) {
 		}
 	}
 }
+
+// A line whose message has another shape, such as a user message whose content is a string, is still read as an
+// event: the result after it counts, and so does the assistant text before it.
+func TestALineWithAnotherMessageShapeIsStillRead(t *testing.T) {
+	lines := strings.Split(strings.TrimSpace(fixture(t, "stream-submit-capped.jsonl")), "\n")
+	odd := `{"type":"user","message":{"role":"user","content":"a prompt as a plain string"},"session_id":"s1"}`
+	stream := strings.Join(append(lines[:len(lines)-1], odd, lines[len(lines)-1]), "\n") + "\n"
+	r, err := runSession(t, &session{stream: stream}, func(tk *gungnir.Task) { tk.MaxTurns = 20 })
+	if err != nil || r.Failure != gungnir.FailureTurnLimit || r.Output != "I read the handler and its tests; no finding yet." {
+		t.Errorf("Run() = %+v, %v; want a turn limit with the last assistant text", r, err)
+	}
+	// The result line itself with a message of another shape.
+	res := strings.Replace(lines[len(lines)-1], `{"type":"result",`, `{"type":"result","message":"text",`, 1)
+	stream = strings.Join(append(lines[:len(lines)-1], res), "\n") + "\n"
+	if r, err := runSession(t, &session{stream: stream}, func(tk *gungnir.Task) { tk.MaxTurns = 20 }); err != nil || r.Failure != gungnir.FailureTurnLimit {
+		t.Errorf("a result line with a string message: %+v, %v; want a turn limit", r, err)
+	}
+	// A session that printed that user line and died had started: an agent failure, not a tool that crashed at start.
+	f := &fake{stdout: odd + "\n", exit: 1}
+	tk := task(f)
+	tk.TranscriptDir = t.TempDir()
+	if _, err := agent().Run(context.Background(), tk); gungnir.FailureOf(err) != gungnir.FailureAgent {
+		t.Errorf("a session that died after a user line: %v (kind %q), want an agent failure", err, gungnir.FailureOf(err))
+	}
+}

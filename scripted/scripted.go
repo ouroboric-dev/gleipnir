@@ -159,6 +159,10 @@ func (st Step) check() error {
 		default:
 			return fmt.Errorf("result failure %q is not agent, transient, quota or turn-limit", o.Failure)
 		}
+		if o.Failure == gungnir.FailureTurnLimit && o.Submitted != "" {
+			// A real adapter reports a turn limit only for a session without a valid submit.
+			return errors.New("a turn-limit result has no submitted document")
+		}
 	}
 	switch st.Kind {
 	case "", gungnir.FailureAgent, gungnir.FailureTransient, gungnir.FailureQuota, gungnir.FailureInfra:

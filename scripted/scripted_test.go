@@ -283,14 +283,15 @@ steps:
 
 func TestScriptedRefusesAScriptThatNamesNoSuchFailure(t *testing.T) {
 	for name, script := range map[string]string{
-		"an unknown kind":           "steps:\n  a:\n    - error: x\n      kind: flaky\n",
-		"a kind on a hang":          "steps:\n  a:\n    - hang: true\n      kind: quota\n",
-		"a kind on a result":        "steps:\n  a:\n    - result: { status: ok }\n      kind: quota\n",
-		"usage beside a result":     "steps:\n  a:\n    - result: { status: ok }\n      usage: { in: 1 }\n",
-		"a failure on a success":    "steps:\n  a:\n    - result: { status: ok, failure: transient }\n",
-		"infra as a result failure": "steps:\n  a:\n    - result: { status: failed, failure: infra }\n",
-		"an unknown failure":        "steps:\n  a:\n    - result: { status: failed, failure: flaky }\n",
-		"output and report":         "steps:\n  a:\n    - result: { status: ok, output: x, report: [] }\n",
+		"an unknown kind":             "steps:\n  a:\n    - error: x\n      kind: flaky\n",
+		"a kind on a hang":            "steps:\n  a:\n    - hang: true\n      kind: quota\n",
+		"a kind on a result":          "steps:\n  a:\n    - result: { status: ok }\n      kind: quota\n",
+		"usage beside a result":       "steps:\n  a:\n    - result: { status: ok }\n      usage: { in: 1 }\n",
+		"a failure on a success":      "steps:\n  a:\n    - result: { status: ok, failure: transient }\n",
+		"infra as a result failure":   "steps:\n  a:\n    - result: { status: failed, failure: infra }\n",
+		"an unknown failure":          "steps:\n  a:\n    - result: { status: failed, failure: flaky }\n",
+		"output and report":           "steps:\n  a:\n    - result: { status: ok, output: x, report: [] }\n",
+		"a turn limit that submitted": "submits: true\nsteps:\n  a:\n    - result: { status: failed, failure: turn-limit, submitted: '{}' }\n",
 	} {
 		p := filepath.Join(t.TempDir(), "s.yaml")
 		os.WriteFile(p, []byte(script), 0o644)

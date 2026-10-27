@@ -313,13 +313,9 @@ type event struct {
 	Subtype string `json:"subtype"`
 	Version string `json:"claude_code_version"`
 
-	Message struct {
-		ID      string `json:"id"`
-		Content []struct {
-			Type string `json:"type"`
-			Text string `json:"text"`
-		} `json:"content"`
-	} `json:"message"`
+	// Message is read only for an assistant event: a message of another shape, such as a user message whose
+	// content is a string, must not make the whole line unreadable.
+	Message json.RawMessage `json:"message"`
 
 	IsError      *bool           `json:"is_error"`
 	Result       string          `json:"result"`
@@ -366,8 +362,18 @@ func parse(r io.Reader) (res gungnir.Result, end ending, seen bool, err error) {
 			}
 		case "assistant":
 			// The stream prints a message one content block per event, all with the message's id.
+			var m struct {
+				ID      string `json:"id"`
+				Content []struct {
+					Type string `json:"type"`
+					Text string `json:"text"`
+				} `json:"content"`
+			}
+			if json.Unmarshal(e.Message, &m) != nil {
+				continue
+			}
 			var said string
-			for _, b := range e.Message.Content {
+			for _, b := range m.Content {
 				if b.Type == "text" {
 					said += b.Text
 				}
@@ -375,10 +381,10 @@ func parse(r io.Reader) (res gungnir.Result, end ending, seen bool, err error) {
 			if strings.TrimSpace(said) == "" {
 				continue
 			}
-			if e.Message.ID == "" || e.Message.ID != lastID {
+			if m.ID == "" || m.ID != lastID {
 				end.last = ""
 			}
-			end.last, lastID = end.last+said, e.Message.ID
+			end.last, lastID = end.last+said, m.ID
 		case "result":
 			ev := e
 			final = &ev
