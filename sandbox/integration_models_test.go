@@ -23,6 +23,8 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"fmt"
+	"net"
 	"strconv"
 	"strings"
 	"testing"
@@ -206,6 +208,7 @@ func refreshResolves(t *testing.T, ctx context.Context, d *Driver, env gungnir.E
 	if out, err := d.run(ctx, d.Podman, "inspect", "--format", "{{range $k, $v := .NetworkSettings.Networks}}{{$k}} {{$v.Gateway}}\n{{end}}", fw); err == nil {
 		t.Logf("the firewall's networks and their gateways:\n%s", out)
 	}
+	probeResolvers(t, ctx, d, fw, spec, host)
 	out, err := d.run(ctx, d.Podman, "exec", fw, "getent", "ahostsv4", host)
 	if err != nil || strings.TrimSpace(string(out)) == "" {
 		t.Errorf("the refresh's lookup of %s, as root in the firewall of %s, fails: %v, %q; a refresh would keep the old addresses",
@@ -214,4 +217,112 @@ func refreshResolves(t *testing.T, ctx context.Context, d *Driver, env gungnir.E
 	if code, out := inSandbox(t, ctx, d, env, "getent", "ahostsv4", host); code != 0 || out == "" {
 		t.Errorf("%s does not resolve in the work container: exit %d, %q", host, code, out)
 	}
+}
+
+// resolverProbe is node in the firewall image: it prints the interface of the default route, each interface's IPv4
+// subnet, and, for each nameserver (argv 1, comma-separated) and each name (argv 2), what that nameserver alone
+// answers for the name: its addresses, or the error (ETIMEOUT when no answer comes back). The firewall image has
+// getent, which asks resolv.conf's list in order, and no nslookup, dig or ip; node's Resolver asks the server it
+// is given and nothing else.
+const resolverProbe = `const dns = require("dns"), os = require("os"), fs = require("fs");
+const servers = process.argv[1].split(","), names = process.argv[2].split(",");
+const routes = fs.readFileSync("/proc/net/route", "utf8").trim().split("\n").slice(1).map(l => l.trim().split(/\s+/));
+console.log("route default " + (routes.filter(f => f[1] === "00000000").map(f => f[0]).join(",") || "none"));
+for (const [i, as] of Object.entries(os.networkInterfaces())) for (const a of as) if (a.family === "IPv4") console.log("interface " + i + " " + a.cidr);
+(async () => {
+  for (const s of servers) for (const n of names) {
+    const r = new dns.promises.Resolver({ timeout: 2000, tries: 1 });
+    r.setServers([s]);
+    try { console.log("answer " + s + " " + n + " " + (await r.resolve4(n)).join(",")); }
+    catch (e) { console.log("answer " + s + " " + n + " " + e.code); }
+  }
+})();`
+
+// probeResolvers records, as a log and not as assertions (firewall resolvers, task T1), which of the firewall's
+// nameservers answers which kind of name: an outside host the sandbox lists, a service's name, the model server's
+// name. It asks each nameserver by its address, as root in the firewall (through the firewall's rules, which allow
+// DNS to the first nameserver alone), and from a probe container of the firewall image on the same networks
+// without those rules, which shows what each resolver itself answers. It also records the interface of the
+// default route, each network's subnet, and which nameserver lies in which subnet.
+func probeResolvers(t *testing.T, ctx context.Context, d *Driver, fw string, spec gungnir.SandboxSpec, host string) {
+	t.Helper()
+	conf, err := d.run(ctx, d.Podman, "exec", fw, "cat", "/etc/resolv.conf")
+	if err != nil {
+		t.Logf("probe: the firewall's resolv.conf: %v", err)
+		return
+	}
+	var servers []string
+	for _, line := range strings.Split(string(conf), "\n") {
+		if f := strings.Fields(line); len(f) >= 2 && f[0] == "nameserver" {
+			servers = append(servers, f[1])
+		}
+	}
+	kinds := map[string]string{host: "outside"}
+	names := []string{host}
+	for _, s := range spec.Services {
+		kinds[s.Name] = "service"
+		names = append(names, s.Name)
+	}
+	if spec.Models != nil {
+		kinds[spec.Models.Name] = "model server"
+		names = append(names, spec.Models.Name)
+	}
+	nets, err := d.run(ctx, d.Podman, "inspect", "--format",
+		"{{range $k, $v := .NetworkSettings.Networks}}{{$k}} {{$v.IPAddress}}/{{$v.IPPrefixLen}} {{$v.Gateway}}\n{{end}}", fw)
+	if err != nil {
+		t.Logf("probe: the firewall's networks: %v", err)
+		return
+	}
+	t.Logf("probe: the firewall's networks (name, address/prefix, gateway):\n%s", nets)
+	type network struct {
+		name   string
+		subnet *net.IPNet
+	}
+	var networks []network
+	for _, line := range strings.Split(strings.TrimSpace(string(nets)), "\n") {
+		if f := strings.Fields(line); len(f) >= 2 {
+			if _, subnet, err := net.ParseCIDR(f[1]); err == nil {
+				networks = append(networks, network{f[0], subnet})
+			}
+		}
+	}
+	args := []string{strings.Join(servers, ","), strings.Join(names, ",")}
+	inFW, err := d.run(ctx, d.Podman, append([]string{"exec", "-u", "0", fw, "node", "-e", resolverProbe}, args...)...)
+	t.Logf("probe: as root in the firewall (%s), through its rules (err %v):\n%s", fw, err, inFW)
+	probe := spec.Run + "-probe"
+	run := []string{"run", "--rm", "--pull=never", "--name", probe, "--label", LabelRun + "=" + spec.Run}
+	for _, n := range networks {
+		run = append(run, "--network", n.name)
+	}
+	t.Cleanup(func() { d.run(context.Background(), d.Podman, "rm", "-f", "-t", "0", probe) })
+	run = append(run, "--entrypoint", "node", d.cfg.ImagesOf(gungnir.SandboxSpec{}).Firewall, "-e", resolverProbe)
+	bare, err := d.run(ctx, d.Podman, append(run, args...)...)
+	t.Logf("probe: from a container of the firewall image on the same networks, without the rules (err %v):\n%s", err, bare)
+
+	answers := func(out []byte) map[string]string {
+		m := map[string]string{}
+		for _, line := range strings.Split(string(out), "\n") {
+			if f := strings.Fields(line); len(f) == 4 && f[0] == "answer" {
+				m[f[1]+" "+f[2]] = f[3]
+			}
+		}
+		return m
+	}
+	fwA, bareA := answers(inFW), answers(bare)
+	var table strings.Builder
+	fmt.Fprintf(&table, "%-16s %-40s %-14s %-24s %-24s %s\n", "nameserver", "network (its subnet holds it)", "kind", "name", "in the firewall", "without the rules")
+	for _, s := range servers {
+		owner := "none"
+		if ip := net.ParseIP(s); ip != nil {
+			for _, n := range networks {
+				if n.subnet.Contains(ip) {
+					owner = n.name + " " + n.subnet.String()
+				}
+			}
+		}
+		for _, n := range names {
+			fmt.Fprintf(&table, "%-16s %-40s %-14s %-24s %-24s %s\n", s, owner, kinds[n], n, fwA[s+" "+n], bareA[s+" "+n])
+		}
+	}
+	t.Logf("probe: which nameserver answers which name (%s):\n%s", spec.Run, table.String())
 }
