@@ -2,10 +2,12 @@ package sandbox
 
 import (
 	"fmt"
+	"maps"
 	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -54,6 +56,12 @@ func runEgress(t *testing.T, hosts string, extra ...string) (calls string, state
 // opens. An empty services means the script gets no second argument.
 func runEgressWithServices(t *testing.T, hosts, services string, extra ...string) (calls string, state string, err error) {
 	t.Helper()
+	return runEgressIn(t, "sh", hosts, services, extra...)
+}
+
+// runEgressIn is runEgressWithServices with the shell that runs the script.
+func runEgressIn(t *testing.T, shell, hosts, services string, extra ...string) (calls string, state string, err error) {
+	t.Helper()
 	bin, log := stubs(t)
 	dir := t.TempDir()
 	hostsFile := filepath.Join(dir, "hosts")
@@ -71,7 +79,7 @@ func runEgressWithServices(t *testing.T, hosts, services string, extra ...string
 		os.WriteFile(servicesFile, []byte(services), 0o644)
 		args = append(args, servicesFile)
 	}
-	cmd := exec.Command("sh", args...)
+	cmd := exec.Command(shell, args...)
 	cmd.Env = append([]string{"PATH=" + bin + ":" + os.Getenv("PATH"), "STUB_LOG=" + log, "STUB_LATE=" + filepath.Join(dir, "late"), "STUB_ROTATE=" + filepath.Join(dir, "rotate"),
 		"YGG_FW_STATE=" + state, "YGG_FW_RESOLV=" + resolv, "YGG_FW_ROUTE=" + route, "YGG_ONCE=1"}, extra...)
 	out, err := cmd.CombinedOutput()
@@ -303,6 +311,7 @@ func awks(t *testing.T) map[string]string {
 		}
 		dirs[strings.Join(a, " ")] = dir
 	}
+	t.Logf("the awks this run tests: %v", slices.Sorted(maps.Keys(dirs)))
 	return dirs
 }
 
@@ -405,5 +414,39 @@ func TestEgressRefusesToOpenWithoutTheDefaultNetworksResolver(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(state, "ready")); err == nil {
 		t.Error("a refused firewall said it was ready")
+	}
+}
+
+// TestEgressRefusesToOpenWhenItCannotRewriteResolvConf: a redirection that fails on a compound command does not
+// stop dash under set -e, so the script must check it itself, or it would apply the rules with its lookups still
+// asking every resolver of the old file.
+func TestEgressRefusesToOpenWhenItCannotRewriteResolvConf(t *testing.T) {
+	if os.Getuid() == 0 {
+		t.Skip("root writes a read-only file")
+	}
+	var shells []string
+	for _, sh := range []string{"sh", "dash", "bash"} {
+		if _, err := exec.LookPath(sh); err == nil {
+			shells = append(shells, sh)
+		}
+	}
+	t.Logf("the shells this run tests: %v", shells)
+	for _, sh := range shells {
+		t.Run(sh, func(t *testing.T) {
+			resolv := filepath.Join(t.TempDir(), "resolv.conf")
+			if err := os.WriteFile(resolv, []byte("nameserver 10.89.0.1\n"), 0o444); err != nil {
+				t.Fatal(err)
+			}
+			calls, state, err := runEgressIn(t, sh, "api.anthropic.com\n", "", "YGG_FW_RESOLV="+resolv)
+			if err == nil || !strings.Contains(err.Error(), "egress: cannot rewrite "+resolv) {
+				t.Errorf("egress.sh with a read-only resolv.conf: %v; want exit 1 and \"cannot rewrite\"", err)
+			}
+			if strings.Contains(calls, "iptables") {
+				t.Errorf("the script changed rules though it could not rewrite resolv.conf:\n%s", calls)
+			}
+			if _, err := os.Stat(filepath.Join(state, "ready")); err == nil {
+				t.Error("the firewall said it was ready")
+			}
+		})
 	}
 }

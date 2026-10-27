@@ -78,8 +78,10 @@ default_resolver() {
 ns_out="$(default_resolver "$ROUTE" "$RESOLV")" || exit 1
 # The script's own lookups (getent) ask the nameservers of resolv.conf in order, so the script rewrites resolv.conf
 # to name ns_out alone: no lookup asks a resolver the rules drop. Written in place: the engine bind-mounts the file.
+# A failed redirection of a compound command does not stop dash under set -e, so the script checks it.
 kept="$(grep -E '^(search|domain|options)[[:space:]]' "$RESOLV" || true)"
-{ [ -z "$kept" ] || printf '%s\n' "$kept"; echo "nameserver $ns_out"; } > "$RESOLV"
+{ [ -z "$kept" ] || printf '%s\n' "$kept"; echo "nameserver $ns_out"; } > "$RESOLV" ||
+  { echo "egress: cannot rewrite $RESOLV" >&2; exit 1; }
 
 # resolve prints "address host" for every IPv4 address of every host, one per line, or fails on a host with none.
 resolve() {

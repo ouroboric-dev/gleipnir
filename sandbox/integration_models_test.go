@@ -230,7 +230,7 @@ func refreshResolves(t *testing.T, ctx context.Context, d *Driver, env gungnir.E
 const resolverProbe = `const dns = require("dns"), os = require("os"), fs = require("fs");
 const servers = process.argv[1].split(","), names = process.argv[2].split(",");
 const routes = fs.readFileSync("/proc/net/route", "utf8").trim().split("\n").slice(1).map(l => l.trim().split(/\s+/));
-console.log("route default " + (routes.filter(f => f[1] === "00000000").map(f => f[0]).join(",") || "none"));
+console.log("route default " + (routes.filter(f => f[1] === "00000000" && f[7] === "00000000").map(f => f[0]).join(",") || "none"));
 for (const [i, as] of Object.entries(os.networkInterfaces())) for (const a of as) if (a.family === "IPv4") console.log("interface " + i + " " + a.cidr);
 (async () => {
   for (const s of servers) for (const n of names) {
