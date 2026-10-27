@@ -97,7 +97,7 @@ func (d *Driver) PodLeftovers(ctx context.Context) ([]PodLeftover, error) {
 // RemovePod removes a pod PodLeftovers listed, without force: a pod that has gained a container
 // since is an error, not a removal.
 func (d *Driver) RemovePod(ctx context.Context, l PodLeftover) error {
-	return d.removePod(ctx, l.Project)
+	return d.removePod(ctx, l.Project, false)
 }
 
 // DevcontainerVersion is the version of the devcontainer CLI the factory was tested with (sandbox

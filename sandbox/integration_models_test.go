@@ -173,14 +173,18 @@ for (const port of [8080, ` + strconv.Itoa(gate) + `]) http.createServer((q, r) 
 		t.Errorf("the gate's port by name beside a service: exit %d, %q; want the stub's answer", code, out)
 	}
 	refreshResolves(t, ctx, d, env2, both)
-	// Down of a sandbox with a service fails today at its pod, on this engine, with or without Models: podman rm -f
-	// --depend names the service as removed and leaves it running, and pod rm refuses it; the network's rm -f then
-	// removes it. That is Down's own matter, so it is logged here, not failed; what Down leaves is checked.
+	// Down removes a sandbox with a running service and the model network (backlog B-206), and leaves the server alone.
 	if err := d.Down(ctx, env2); err != nil {
-		t.Logf("Down() with a service = %v", err)
+		t.Errorf("Down() with a service = %v", err)
 	}
 	if ids, _ := podman("ps", "-a", "-q", "--filter", "label="+LabelRun+"="+both.Run); ids != "" {
 		t.Errorf("Down left containers: %s", ids)
+	}
+	if _, err := podman("pod", "exists", "pod_"+env2.Project); err == nil {
+		t.Errorf("Down left the pod pod_%s", env2.Project)
+	}
+	if state, err := podman("inspect", "--format", "{{.State.Running}}", server); err != nil || state != "true" {
+		t.Errorf("the stub server after Down with a service: running %q, %v", state, err)
 	}
 }
 

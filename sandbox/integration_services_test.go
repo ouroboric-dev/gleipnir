@@ -10,10 +10,14 @@ package sandbox
 //	YGG_SANDBOX_SERVICE_PORT    the port it listens on, such as 80
 //
 // then run: go test -tags sandbox -run 'TestSandboxServices|TestSandboxScratch|TestASandboxService' -v -timeout 40m ./sandbox
+//
+// TestSandboxDownRemovesARunningService needs no service image: run it with -run TestSandboxDown.
 
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"net"
 	"os"
 	"path/filepath"
@@ -103,6 +107,48 @@ func TestSandboxServicesAreReachableByNameOnTheirPortsOnly(t *testing.T) {
 		if l.Run == spec.Run {
 			t.Errorf("Down left %+v, the service's container among them", l)
 		}
+	}
+}
+
+// Backlog B-206: Down removes a sandbox whose service is running, and leaves no container and no pod of the
+// run. podman rm --depend can name such a service as removed and leave it running, and the pod's removal
+// then fails. The service is node in the pinned Node image (the base of the factory's images, already on the
+// engine), so the test pulls nothing.
+func TestSandboxDownRemovesARunningService(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 35*time.Minute)
+	defer cancel()
+	d, tree := itDriver(t, ctx)
+	podman := func(args ...string) (string, error) {
+		out, err := d.run(ctx, d.Podman, args...)
+		return strings.TrimSpace(string(out)), err
+	}
+	b := make([]byte, 4)
+	rand.Read(b)
+	const port = 7000
+	spec := itTree(t, tree)
+	spec.Run = "b206-" + hex.EncodeToString(b)
+	spec.Services = []gungnir.Service{{Name: "svc", Image: NodeImage, Ports: []int{port},
+		Command: []string{"node", "-e", `process.on("SIGTERM", () => process.exit(0)); require("http").createServer((q, r) => r.end("svc\n")).listen(` + strconv.Itoa(port) + `)`}}}
+	env, err := d.Up(ctx, spec)
+	if err != nil {
+		t.Fatalf("Up() = %v", err)
+	}
+	t.Cleanup(func() { d.Down(context.Background(), env) })
+	// Control: the service runs when Down starts.
+	if id, err := podman("ps", "-q", "--filter", "label=com.docker.compose.project="+env.Project, "--filter", "label=com.docker.compose.service=svc"); err != nil || id == "" {
+		t.Fatalf("control: the service of %s is not running: %q, %v", env.Project, id, err)
+	}
+	if err := d.Down(ctx, env); err != nil {
+		t.Errorf("Down() = %v", err)
+	}
+	if ids, _ := podman("ps", "-a", "-q", "--filter", "label="+LabelRun+"="+spec.Run); ids != "" {
+		t.Errorf("Down left containers: %s", ids)
+	}
+	if _, err := podman("pod", "exists", "pod_"+env.Project); err == nil {
+		t.Errorf("Down left the pod pod_%s", env.Project)
+	}
+	if err := d.Down(ctx, env); err != nil {
+		t.Errorf("Down() a second time = %v", err)
 	}
 }
 

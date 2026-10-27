@@ -361,10 +361,14 @@ done
 echo "processes are still running in the sandbox" >&2
 exit 1`
 
-// Down removes the sandbox's containers, its pod and its networks. It finds the containers by label,
-// so it works for a sandbox this process never started, and it is safe to call twice. The pod is
-// the one compose named for the project (pod_ plus the project): compose leaves it behind when the
-// containers go (backlog B-138). It is removed without force, after the containers; no pod is no error.
+// Down removes the sandbox's pod, its containers and its networks, and it is safe to call twice. The pod
+// is the one compose named for the project (pod_ plus the project), which compose leaves behind when the
+// containers go (backlog B-138); no pod is no error. Down removes it first, by force, with the containers
+// in it: podman rm --depend can name a service as removed and leave it running when two of its dependents
+// also depend on each other, as fw and work do (backlog B-206); the pod's removal orders its containers
+// from the pod's own graph. The name is the project's, so the force reaches this sandbox's containers
+// alone. Then Down finds the containers left by label, so it works for a sandbox this process never
+// started or whose containers are in no pod.
 func (d *Driver) Down(ctx context.Context, env gungnir.Env) error {
 	if env.Project == "" {
 		return errors.New("no sandbox project to stop")
@@ -376,18 +380,18 @@ func (d *Driver) Down(ctx context.Context, env gungnir.Env) error {
 		ctx, cancel = context.WithTimeout(ctx, d.DownTimeout)
 		defer cancel()
 	}
+	var errs []error
+	if err := d.removePod(ctx, env.Project, true); err != nil {
+		errs = append(errs, err)
+	}
 	ids, err := d.run(ctx, d.Podman, "ps", "-a", "-q", "--filter", "label=com.docker.compose.project="+env.Project)
 	if err != nil {
-		return err
+		return errors.Join(append(errs, err)...)
 	}
-	var errs []error
 	if f := strings.Fields(string(ids)); len(f) > 0 {
 		if _, err := d.run(ctx, d.Podman, append([]string{"rm", "-f", "-t", "2", "--depend"}, f...)...); err != nil {
 			errs = append(errs, err)
 		}
-	}
-	if err := d.removePod(ctx, env.Project); err != nil {
-		errs = append(errs, err)
 	}
 	for _, n := range []string{"default", ServicesNetwork} {
 		if _, err := d.run(ctx, d.Podman, "network", "exists", env.Project+"_"+n); err == nil {
@@ -399,12 +403,19 @@ func (d *Driver) Down(ctx context.Context, env gungnir.Env) error {
 	return errors.Join(errs...)
 }
 
-// removePod removes the pod compose made for project, if there is one.
-func (d *Driver) removePod(ctx context.Context, project string) error {
+// removePod removes the pod compose made for project, if there is one. With force, it stops and removes
+// the pod's containers too, with the same stop timeout as Down's rm; without, a pod that holds a running
+// container is an error. Removing the pod also removes its containers' anonymous volumes, which rm
+// without -v leaves.
+func (d *Driver) removePod(ctx context.Context, project string, force bool) error {
 	pod := "pod_" + project
 	if _, err := d.run(ctx, d.Podman, "pod", "exists", pod); err != nil {
 		return nil
 	}
-	_, err := d.run(ctx, d.Podman, "pod", "rm", pod)
+	args := []string{"pod", "rm"}
+	if force {
+		args = append(args, "-f", "-t", "2")
+	}
+	_, err := d.run(ctx, d.Podman, append(args, pod)...)
 	return err
 }
