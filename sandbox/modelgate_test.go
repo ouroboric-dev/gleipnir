@@ -27,14 +27,22 @@ const gateLimit = 32 << 20 // spec §3.5: a body is at most 32 MiB
 
 // buildGate writes the embedded source of the gate into a folder outside any module and builds it there, as the
 // image's builder stage does, so the test runs the bytes the image carries.
-func buildGate(t *testing.T) string {
+func buildGate(t *testing.T) string { return buildGateWith(t) }
+
+// buildGateWith is buildGate with extra linker flags. The tests shorten the gate's body window this way, with
+// -X main.bodyWindowOverride: the image builds without it, so the image's gate always has the 60 seconds.
+func buildGateWith(t *testing.T, ldflags ...string) string {
 	t.Helper()
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "main.go"), []byte(modelGateSource), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	bin := filepath.Join(dir, "ygg-modelgate")
-	cmd := exec.Command("go", "build", "-o", bin, "main.go")
+	args := []string{"build"}
+	if len(ldflags) > 0 {
+		args = append(args, "-ldflags", strings.Join(ldflags, " "))
+	}
+	cmd := exec.Command("go", append(args, "-o", bin, "main.go")...)
 	cmd.Dir = dir
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("go build of the gate: %v\n%s", err, out)
@@ -46,7 +54,12 @@ func buildGate(t *testing.T) string {
 // listens on a port the system picks and says which on its standard error.
 func startGate(t *testing.T, upstream, allow string) string {
 	t.Helper()
-	bin := buildGate(t)
+	return startBuiltGate(t, buildGate(t), upstream, allow)
+}
+
+// startBuiltGate is startGate for a binary buildGate or buildGateWith made.
+func startBuiltGate(t *testing.T, bin, upstream, allow string) string {
+	t.Helper()
 	cmd := exec.Command(bin, "-listen", "127.0.0.1:0", "-upstream", upstream, "-allow", allow)
 	stderr, err := cmd.StderrPipe()
 	if err != nil {
@@ -403,5 +416,180 @@ func TestModelGateNeedsItsFlags(t *testing.T) {
 		if ee, ok := err.(*exec.ExitError); !ok || ee.ExitCode() != 2 || errOut.Len() == 0 {
 			t.Errorf("%s: %v, %q; want exit 2 with a reason", name, err, errOut.String())
 		}
+	}
+}
+
+// holdingUpstream answers the first hold requests only after release gives it a token, and says on entered when
+// each of them arrives; later requests are answered at once. hits counts every request it receives.
+func holdingUpstream(t *testing.T, hold int) (up *httptest.Server, entered chan struct{}, release chan struct{}, hits *atomic.Int32) {
+	t.Helper()
+	entered, release, hits = make(chan struct{}, hold), make(chan struct{}), new(atomic.Int32)
+	up = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.Copy(io.Discard, r.Body)
+		if hits.Add(1) <= int32(hold) {
+			entered <- struct{}{}
+			select {
+			case <-release:
+			case <-r.Context().Done():
+			}
+		}
+		_, _ = io.WriteString(w, `{"choices":[]}`)
+	}))
+	t.Cleanup(up.Close)
+	return up, entered, release, hits
+}
+
+// Spec §3.5: the gate passes at most 8 requests at once. A ninth is answered 503 while eight are in flight, never
+// reaches the upstream, and passes once one of the eight ends.
+func TestModelGateCapsRequestsInFlight(t *testing.T) {
+	const slots = 8
+	up, entered, release, hits := holdingUpstream(t, slots)
+	allow := filepath.Join(t.TempDir(), "allowed")
+	writeAllow(t, allow, "qwen-a")
+	base := startGate(t, up.URL, allow)
+
+	ended := make(chan int, slots)
+	for i := 0; i < slots; i++ {
+		go func() {
+			resp, err := http.Post(base+"/v1/chat/completions", "application/json", strings.NewReader(`{"model":"qwen-a"}`))
+			if err != nil {
+				ended <- -1
+				return
+			}
+			resp.Body.Close()
+			ended <- resp.StatusCode
+		}()
+	}
+	for i := 0; i < slots; i++ {
+		select {
+		case <-entered:
+		case <-time.After(10 * time.Second):
+			t.Fatalf("only %d requests reached the upstream; want %d", i, slots)
+		}
+	}
+	resp := chat(t, base, "qwen-a")
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		t.Errorf("the ninth request with eight in flight: %d, want 503", resp.StatusCode)
+	}
+	if n := hits.Load(); n != slots {
+		t.Errorf("the upstream received %d requests, want %d: the ninth must not reach it", n, slots)
+	}
+
+	release <- struct{}{}
+	if code := <-ended; code != 200 {
+		t.Fatalf("a held request ended with %d, want 200", code)
+	}
+	// The client has the answer a moment before the gate frees the slot, so a ninth request is retried until it
+	// passes; it must pass well within the time out.
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		resp := chat(t, base, "qwen-a")
+		if resp.StatusCode == 200 {
+			break
+		}
+		if resp.StatusCode != http.StatusServiceUnavailable || time.Now().After(deadline) {
+			t.Fatalf("after one request ended, the next: %d, want 200", resp.StatusCode)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	for i := 1; i < slots; i++ {
+		release <- struct{}{}
+	}
+	for i := 1; i < slots; i++ {
+		<-ended
+	}
+}
+
+// A request the gate refuses before it proxies gives its slot back: more refusals than slots leave the gate open.
+func TestModelGateRefusalsKeepNoSlot(t *testing.T) {
+	up, _, hits := recordingUpstream(t)
+	allow := filepath.Join(t.TempDir(), "allowed")
+	writeAllow(t, allow, "qwen-a")
+	base := startGate(t, up.URL, allow)
+	for i := 0; i < 20; i++ {
+		if resp := chat(t, base, "other"); resp.StatusCode != http.StatusForbidden {
+			t.Fatalf("a wrong model: %d, want 403", resp.StatusCode)
+		}
+	}
+	if resp := chat(t, base, "qwen-a"); resp.StatusCode != 200 || hits.Load() != 1 {
+		t.Errorf("after 20 refusals: %d, the upstream got %d; want 200 and 1", resp.StatusCode, hits.Load())
+	}
+}
+
+// bodyWindow is the body window the tests build the gate with.
+const bodyWindow = 300 * time.Millisecond
+
+func gateWithWindow(t *testing.T, upstream, allow string) string {
+	t.Helper()
+	return startBuiltGate(t, buildGateWith(t, "-X main.bodyWindowOverride="+bodyWindow.String()), upstream, allow)
+}
+
+// Spec §3.5: a body must arrive within 60 seconds of the headers. A body that stalls gets 408 when the window
+// ends and never reaches the upstream.
+func TestModelGateTimesOutASlowBody(t *testing.T) {
+	up, _, hits := recordingUpstream(t)
+	allow := filepath.Join(t.TempDir(), "allowed")
+	writeAllow(t, allow, "qwen-a")
+	base := gateWithWindow(t, up.URL, allow)
+
+	conn, err := net.Dial("tcp", strings.TrimPrefix(base, "http://"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	_ = conn.SetDeadline(time.Now().Add(10 * time.Second))
+	// Headers say 100 bytes; 10 arrive and the client stalls.
+	fmt.Fprint(conn, "POST /v1/chat/completions HTTP/1.1\r\nHost: x\r\nContent-Type: application/json\r\nContent-Length: 100\r\n\r\n{\"model\":\"q")
+	resp, err := http.ReadResponse(bufio.NewReader(conn), nil)
+	if err != nil {
+		t.Fatalf("no answer to a stalled body: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusRequestTimeout {
+		t.Errorf("a stalled body: %d, want 408", resp.StatusCode)
+	}
+	if hits.Load() != 0 {
+		t.Error("the upstream saw a request whose body never arrived")
+	}
+	// The slot comes back: the same gate still serves a good request.
+	if resp := chat(t, base, "qwen-a"); resp.StatusCode != 200 {
+		t.Errorf("after a timed-out body: %d, want 200", resp.StatusCode)
+	}
+}
+
+// The window bounds reading the body only: a response that streams for longer than the window is not cut.
+func TestModelGateWindowDoesNotCutAStream(t *testing.T) {
+	released := make(chan struct{})
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.Copy(io.Discard, r.Body)
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, "data: one\n\n")
+		w.(http.Flusher).Flush()
+		select {
+		case <-released:
+		case <-r.Context().Done():
+			return
+		}
+		_, _ = io.WriteString(w, "data: two\n\n")
+	}))
+	t.Cleanup(up.Close)
+	allow := filepath.Join(t.TempDir(), "allowed")
+	writeAllow(t, allow, "qwen-a")
+	base := gateWithWindow(t, up.URL, allow)
+
+	resp, err := http.Post(base+"/v1/chat/completions", "application/json", strings.NewReader(`{"model":"qwen-a","stream":true}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	r := bufio.NewReader(resp.Body)
+	if first, err := r.ReadString('\n'); err != nil || first != "data: one\n" {
+		t.Fatalf("the first chunk: %q, %v", first, err)
+	}
+	time.Sleep(3 * bodyWindow) // the stream outlives the window; the gate must still carry the rest
+	close(released)
+	rest, err := io.ReadAll(r)
+	if string(rest) != "\ndata: two\n\n" || err != nil {
+		t.Errorf("the rest of the stream after the window: %q, %v", rest, err)
 	}
 }
