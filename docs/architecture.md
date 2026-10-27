@@ -63,11 +63,11 @@ The harness: agent adapters, the devcontainer sandbox driver, policies and the c
   pass the contract in `YGG_OUTPUT_CONTRACT`. The ajv tree comes from a lock file (`npm ci`), and the image tag hashes
   the script, the ajv pin, both package files and every schema.
 - Tears a sandbox down with `Down`: it removes the compose pod (`pod_` plus the project, which compose leaves
-  behind and `podman pod prune` keeps while it is Created; no pod is no error) by force, with its containers,
-  then the containers left by label, then the networks. The pod goes first because `podman rm --depend` can
-  report a running service as removed and leave it in the pod. `PodLeftovers` lists the factory's pods that
-  hold no container, for `ygg doctor`, and `RemovePod` removes one, without force; `RunPrefix` ties a pod's
-  project to a run id.
+  behind and `podman pod prune` keeps while it is Created; no pod is no error) by force, with its containers
+  and their anonymous volumes, then the containers left by label, then the networks. The pod goes first
+  because `podman rm --depend` can report a running service as removed and leave it in the pod.
+  `PodLeftovers` lists the factory's pods that hold no container, for `ygg doctor`, and `RemovePod` removes
+  one, without force; `RunPrefix` ties a pod's project to a run id.
 - Builds a realm's stack from the realm's build context (`BuildStack`, for `ygg sandbox build`): only
   from images pinned by digest and the Containerfile's own stages, with the isolated registry auth, and
   tagged with a hash of the context. The check scripts a realm bakes into its stack are read-only for the

@@ -364,13 +364,11 @@ exit 1`
 // Down removes the sandbox's pod, its containers and its networks, and it is safe to call twice. The pod
 // is the one compose named for the project (pod_ plus the project), which compose leaves behind when the
 // containers go (backlog B-138); no pod is no error. Down removes it first, by force, with the containers
-// in it: podman rm --depend names a service as removed and leaves it running when two of its dependents
-// also depend on each other, as fw and work do, so a pod removed after the containers still held a running
-// service and its removal failed (backlog B-206). The pod's removal orders its containers from the pod's
-// own graph. The name is the project's, so the force reaches this sandbox's containers alone, which Down
-// removed by force before too. Then Down finds the
-// containers left by label, so it works for a sandbox this process never started or whose containers are
-// in no pod.
+// in it: podman rm --depend can name a service as removed and leave it running when two of its dependents
+// also depend on each other, as fw and work do (backlog B-206); the pod's removal orders its containers
+// from the pod's own graph. The name is the project's, so the force reaches this sandbox's containers
+// alone. Then Down finds the containers left by label, so it works for a sandbox this process never
+// started or whose containers are in no pod.
 func (d *Driver) Down(ctx context.Context, env gungnir.Env) error {
 	if env.Project == "" {
 		return errors.New("no sandbox project to stop")
@@ -407,7 +405,8 @@ func (d *Driver) Down(ctx context.Context, env gungnir.Env) error {
 
 // removePod removes the pod compose made for project, if there is one. With force, it stops and removes
 // the pod's containers too, with the same stop timeout as Down's rm; without, a pod that holds a running
-// container is an error.
+// container is an error. Removing the pod also removes its containers' anonymous volumes, which rm
+// without -v leaves.
 func (d *Driver) removePod(ctx context.Context, project string, force bool) error {
 	pod := "pod_" + project
 	if _, err := d.run(ctx, d.Podman, "pod", "exists", pod); err != nil {

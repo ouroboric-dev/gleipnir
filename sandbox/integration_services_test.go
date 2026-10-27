@@ -111,8 +111,8 @@ func TestSandboxServicesAreReachableByNameOnTheirPortsOnly(t *testing.T) {
 }
 
 // Backlog B-206: Down removes a sandbox whose service is running, and leaves no container and no pod of the
-// run. podman rm --depend named such a service as removed and left it running, and the pod's removal then
-// failed. The service is node in the pinned Node image (the base of the factory's images, already on the
+// run. podman rm --depend can name such a service as removed and leave it running, and the pod's removal
+// then fails. The service is node in the pinned Node image (the base of the factory's images, already on the
 // engine), so the test pulls nothing.
 func TestSandboxDownRemovesARunningService(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 35*time.Minute)

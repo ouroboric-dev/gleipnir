@@ -343,10 +343,18 @@ func TestDownWithNoPodIsNotAnError(t *testing.T) {
 }
 
 func TestDownReportsAPodThatWillNotGo(t *testing.T) {
-	d, _, sp := fakeEngine(t)
+	d, log, sp := fakeEngine(t)
 	t.Setenv("STUB_POD_RM_EXIT", "2")
-	if err := d.Down(context.Background(), gungnir.Env{Project: Project(sp), Container: "work123"}); err == nil {
+	env := gungnir.Env{Project: Project(sp), Container: "work123"}
+	if err := d.Down(context.Background(), env); err == nil {
 		t.Error("Down() hid a pod that could not be removed")
+	}
+	// The rest of the cleanup still runs past the pod that would not go.
+	got := logOf(t, log)
+	pod := strings.Index(got, "podman pod rm -f -t 2 pod_"+env.Project+"\n")
+	label, net := strings.Index(got, "podman rm -f -t 2 --depend work123 fw456"), strings.Index(got, "podman network rm -f "+env.Project+"_default")
+	if pod < 0 || label < pod || net < pod {
+		t.Errorf("Down stopped at the pod that would not go; want the containers by label and the network removed after it:\n%s", got)
 	}
 }
 
