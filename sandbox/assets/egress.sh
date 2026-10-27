@@ -36,9 +36,12 @@ RESOLV="${YGG_FW_RESOLV:-/etc/resolv.conf}"
 ROUTE="${YGG_FW_ROUTE:-/proc/net/route}"
 mkdir -p "$STATE"
 
-# default_resolver ROUTE RESOLV prints the first IPv4 nameserver of RESOLV that lies in a subnet routed on the
-# interface of the default route in ROUTE (/proc/net/route's text: each address is the hex of its 32 bits in
-# memory, so its last byte is the first octet), or fails and says why. POSIX awk: no bit operations, no hex.
+# default_resolver ROUTE RESOLV prints the first IPv4 nameserver of RESOLV that lies in a subnet connected to the
+# interface of the default route in ROUTE, or fails and says why. ROUTE is /proc/net/route's text: each address is
+# the hex of its 32 bits in memory, so its last byte is the first octet. The default route has destination and mask
+# 00000000 (a split route such as 0.0.0.0/1 is not one); of several, the lowest metric wins, then the first listed.
+# A connected route has gateway 00000000: a route through a gateway is not the interface's subnet. POSIX awk: no
+# bit operations, no hex.
 default_resolver() {
   awk -v resolv="$2" '
     function hex(s,   i, n) {
@@ -53,8 +56,8 @@ default_resolver() {
       return r
     }
     function fail(msg) { print "egress: " msg | "cat 1>&2"; close("cat 1>&2"); exit 1 }
-    NR > 1 && $2 == "00000000" && dev == "" { dev = $1 }
-    NR > 1 && $2 != "00000000" { n++; ifc[n] = $1; dst[n] = $2; msk[n] = $8 }
+    NR > 1 && $2 == "00000000" && $8 == "00000000" && (dev == "" || $7 + 0 < metric) { dev = $1; metric = $7 + 0 }
+    NR > 1 && $8 != "00000000" && $3 == "00000000" { n++; ifc[n] = $1; dst[n] = $2; msk[n] = $8 }
     END {
       if (dev == "") fail("no default route in " FILENAME)
       while ((getline line < resolv) > 0) {
@@ -73,8 +76,8 @@ default_resolver() {
 }
 
 ns_out="$(default_resolver "$ROUTE" "$RESOLV")" || exit 1
-# The script's own lookups (getent) ask the nameservers of resolv.conf in order: it names ns_out alone, so no lookup
-# asks a resolver the rules drop. Written in place: the engine bind-mounts the file.
+# The script's own lookups (getent) ask the nameservers of resolv.conf in order, so the script rewrites resolv.conf
+# to name ns_out alone: no lookup asks a resolver the rules drop. Written in place: the engine bind-mounts the file.
 kept="$(grep -E '^(search|domain|options)[[:space:]]' "$RESOLV" || true)"
 { [ -z "$kept" ] || printf '%s\n' "$kept"; echo "nameserver $ns_out"; } > "$RESOLV"
 

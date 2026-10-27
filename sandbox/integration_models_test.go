@@ -9,12 +9,13 @@ package sandbox
 // pulls nothing. The network and the stub are named for this run alone and removed at the end; the test
 // touches nothing else on the engine.
 //
-// The firewall resolves the listed hosts again every YGG_REFRESH seconds, as root, through the first nameserver
-// of its resolv.conf, and dnsmasq forwards the services' names and the server's to that same nameserver. Beside
-// an internal network that nameserver may be the internal network's, which need not know an outside name, and a
-// refresh would then keep the old addresses with no error. So the test runs the refresh's own lookup (getent
-// ahostsv4, as root in the firewall) for a listed host, with the model network alone and with a realm service
-// beside it. It does not force a refresh of the running script: its environment is the generated file's, which
+// The firewall resolves the listed hosts again every YGG_REFRESH seconds, as root, through one resolver: the
+// nameserver inside the subnet of its default route, which its resolv.conf names alone. dnsmasq forwards the
+// services' names and the server's to that same resolver. An internal network's resolver answers outside names
+// only by forwarding them, so if the firewall asked it, a refresh could keep the old addresses with no error. So the
+// test runs the refresh's own lookup (getent ahostsv4, as root in the firewall) for a listed host, and checks that
+// the rules and the firewall's DNS name the default network's resolver alone, with the model network alone and
+// with a realm service beside it. It does not force a refresh of the running script: its environment is the generated file's, which
 // Validate keeps, and ending its sleep ends its loop.
 //
 // Run: go test -tags sandbox -run TestIntegrationModelNetwork -v -timeout 40m ./sandbox
@@ -202,7 +203,7 @@ func refreshResolves(t *testing.T, ctx context.Context, d *Driver, env gungnir.E
 	}
 	host := spec.Egress[len(spec.Egress)-1]
 	// For the record: the firewall's nameservers, and the gateway of each of its networks, which is that network's
-	// resolver. egress.sh asks the first nameserver only.
+	// resolver. egress.sh rewrites resolv.conf to name the default network's resolver alone, and asks it only.
 	if out, err := d.run(ctx, d.Podman, "exec", fw, "cat", "/etc/resolv.conf"); err == nil {
 		t.Logf("the firewall's resolv.conf (%s):\n%s", env.Project, out)
 	}
@@ -242,9 +243,9 @@ for (const [i, as] of Object.entries(os.networkInterfaces())) for (const a of as
 
 // probeResolvers records, as a log and not as assertions (firewall resolvers, task T1), which of the firewall's
 // nameservers answers which kind of name: an outside host the sandbox lists, a service's name, the model server's
-// name. It asks each nameserver by its address, as root in the firewall (through the firewall's rules, which allow
-// DNS to the first nameserver alone), and from a probe container of the firewall image on the same networks
-// without those rules, which shows what each resolver itself answers. It also records the interface of the
+// name. It asks each network's resolver by its address, as root in the firewall (through the firewall's rules, which
+// allow DNS to the default network's resolver alone), and from a probe container of the firewall image on the same
+// networks without those rules, which shows what each resolver itself answers. It also records the interface of the
 // default route, each network's subnet, and which nameserver lies in which subnet.
 func probeResolvers(t *testing.T, ctx context.Context, d *Driver, fw string, spec gungnir.SandboxSpec, host string) {
 	t.Helper()
@@ -397,6 +398,15 @@ func askTheDefaultResolver(t *testing.T, ctx context.Context, d *Driver, env gun
 	// For the record: the work container's resolv.conf (its queries go to dnsmasq whatever it names).
 	_, workResolv := inSandbox(t, ctx, d, env, "cat", "/etc/resolv.conf")
 	t.Logf("the work container's resolv.conf (%s):\n%s", env.Project, workResolv)
+	// The work container shares the firewall's resolv.conf and hosts files, which the firewall's lookups read as
+	// root: the agent must not write either (a line in hosts would map a listed host to any address).
+	for _, file := range []string{"/etc/hosts", "/etc/resolv.conf"} {
+		code, out := inSandbox(t, ctx, d, env, "sh", "-c", "ls -ln "+file+"; id; echo x >> "+file)
+		t.Logf("the work container appends to %s (%s): exit %d, %q", file, env.Project, code, out)
+		if code == 0 {
+			t.Errorf("the work container's user can write %s, which the firewall reads as root: %q", file, out)
+		}
+	}
 	rules := inFW("iptables", "-S", "OUTPUT")
 	t.Logf("the firewall's OUTPUT rules (%s, the default network's resolver %s):\n%s", env.Project, nsOut, rules)
 	allowed := 0

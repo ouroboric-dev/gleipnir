@@ -236,8 +236,9 @@ func TestEgressAnswersWhatItAllowsAfterARefreshToo(t *testing.T) {
 	}
 }
 
-// routeTable writes /proc/net/route's text for routes given as "IFACE default GATEWAY" or "IFACE ADDRESS/PREFIX":
-// the kernel prints each address as the hex of its 32 bits in memory, little-endian on the engine's machines.
+// routeTable writes /proc/net/route's text for routes given as "IFACE default GATEWAY [metric N]" or
+// "IFACE ADDRESS/PREFIX [via GATEWAY] [metric N]": the kernel prints each address as the hex of its 32 bits in
+// memory, little-endian on the engine's machines, and a connected route's gateway as 00000000.
 func routeTable(t *testing.T, routes ...string) string {
 	t.Helper()
 	le := func(ip net.IP) string {
@@ -248,15 +249,28 @@ func routeTable(t *testing.T, routes ...string) string {
 	b.WriteString("Iface\tDestination\tGateway \tFlags\tRefCnt\tUse\tMetric\tMask\t\tMTU\tWindow\tIRTT\t\t\n")
 	for _, r := range routes {
 		f := strings.Fields(r)
+		dst, mask, gw, flags, metric := "00000000", "00000000", "00000000", "0001", "0"
+		rest := f[2:]
 		if f[1] == "default" {
-			fmt.Fprintf(&b, "%s\t00000000\t%s\t0003\t0\t0\t0\t00000000\t0\t0\t0   \n", f[0], le(net.ParseIP(f[2])))
-			continue
+			gw, flags, rest = le(net.ParseIP(f[2])), "0003", f[3:]
+		} else {
+			_, subnet, err := net.ParseCIDR(f[1])
+			if err != nil {
+				t.Fatal(err)
+			}
+			dst, mask = le(subnet.IP), le(net.IP(subnet.Mask))
 		}
-		_, subnet, err := net.ParseCIDR(f[1])
-		if err != nil {
-			t.Fatal(err)
+		for i := 0; i+1 < len(rest); i += 2 {
+			switch rest[i] {
+			case "via":
+				gw, flags = le(net.ParseIP(rest[i+1])), "0003"
+			case "metric":
+				metric = rest[i+1]
+			default:
+				t.Fatalf("route %q: unknown word %q", r, rest[i])
+			}
 		}
-		fmt.Fprintf(&b, "%s\t%s\t00000000\t0001\t0\t0\t0\t%s\t0\t0\t0   \n", f[0], le(subnet.IP), le(net.IP(subnet.Mask)))
+		fmt.Fprintf(&b, "%s\t%s\t%s\t%s\t0\t0\t%s\t%s\t0\t0\t0   \n", f[0], dst, gw, flags, metric, mask)
 	}
 	return b.String()
 }
@@ -305,6 +319,20 @@ func TestEgressPicksTheResolverOfTheDefaultRoutesNetwork(t *testing.T) {
 			"nameserver fd00::1\nnameserver 10.89.7.1\nnameserver 10.88.3.1\n", "10.88.3.1", ""},
 		{"no resolver in the default network", lmis, "nameserver 10.89.7.1\nnameserver 10.89.11.1\n", "", "no nameserver"},
 		{"no default route", routeTable(t, "eth0 10.89.7.0/24"), "nameserver 10.89.7.1\n", "", "no default route"},
+		// A split route (0.0.0.0/1) has destination 00000000 too: only mask 00000000 makes a default route.
+		{"a split route on an internal interface listed first",
+			routeTable(t, "eth1 0.0.0.0/1 via 10.89.7.1", "eth1 10.89.7.0/24", "eth0 default 10.89.12.1", "eth0 10.89.12.0/24"),
+			"nameserver 10.89.7.1\nnameserver 10.89.12.1\n", "10.89.12.1", ""},
+		// A route through a gateway is not the interface's subnet: only connected routes count.
+		{"a wide route through a gateway on the default interface",
+			routeTable(t, "eth0 default 10.89.12.1", "eth0 10.89.0.0/16 via 10.89.12.1", "eth0 10.89.12.0/24", "eth1 10.89.7.0/24"),
+			"nameserver 10.89.7.1\nnameserver 10.89.12.1\n", "10.89.12.1", ""},
+		{"two default routes: the lower metric wins, wherever it is listed",
+			routeTable(t, "eth1 default 10.89.7.1 metric 200", "eth1 10.89.7.0/24", "eth0 default 10.89.12.1 metric 100", "eth0 10.89.12.0/24"),
+			"nameserver 10.89.7.1\nnameserver 10.89.12.1\n", "10.89.12.1", ""},
+		{"two default routes of one metric: the first listed",
+			routeTable(t, "eth0 default 10.89.12.1 metric 100", "eth0 10.89.12.0/24", "eth1 default 10.89.7.1 metric 100", "eth1 10.89.7.0/24"),
+			"nameserver 10.89.7.1\nnameserver 10.89.12.1\n", "10.89.12.1", ""},
 	} {
 		for awk, dir := range awks(t) {
 			t.Run(c.name+" ("+awk+")", func(t *testing.T) {
