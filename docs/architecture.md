@@ -24,7 +24,9 @@ The harness: agent adapters, the devcontainer sandbox driver, policies and the c
   session names one provider, `LocalProvider` (`local`), speaking the OpenAI-compatible protocol to the server,
   with no API key: it needs no `OPENROUTER_API_KEY`, and `Result.Provider` is `local`. Its cost is the tokens
   times the price, marked estimated. A reasoning effort is refused, because the model list sets it. Privacy
-  `strict` is accepted with the same configuration as `standard`: the model sends nothing outside the machine.
+  `strict` is accepted with the same configuration as `standard`: the model sends nothing outside the machine. A local session runs `opencode run` with `--thinking`, so the
+  model's thinking is written to the transcript as `reasoning` events; those are neither the answer nor usage, and
+  their token count stays 0 because llama-server sends none.
 - Hands a session's typed output back (change typed-boundaries). A task with `Output` set gets one MCP server,
   `ygg`: Claude Code through `--mcp-config` (with `--strict-mcp-config` kept, so a leaf's `.mcp.json` is never
   read), opencode through the `mcp` key of its configuration (with project configuration switched off). Both start

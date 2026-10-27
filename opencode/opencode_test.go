@@ -554,12 +554,17 @@ func TestReasoningEventsAreNeitherTheAnswerNorUsage(t *testing.T) {
 	}
 }
 
-// An OpenRouter session does not print thinking: its command line has no --thinking.
-func TestAnOpenRouterSessionHasNoThinkingFlag(t *testing.T) {
+// An OpenRouter model id that starts with local/ is still an OpenRouter model: the reference is openrouter/local/x
+// and the command line has no --thinking.
+func TestAnOpenRouterModelNamedLocalHasNoThinkingFlag(t *testing.T) {
 	for _, ro := range []bool{false, true} {
 		tk := task(&fake{}, t)
 		tk.ReadOnly = ro
-		for _, a := range Args(tk, "openai/gpt-4o-mini") {
+		argv := Args(tk, "local/x")
+		if got := strings.Join(argv, " "); !strings.Contains(got, " -m openrouter/local/x") {
+			t.Errorf("argv = %q, want the reference openrouter/local/x", got)
+		}
+		for _, a := range argv {
 			if a == "--thinking" {
 				t.Errorf("--thinking in an OpenRouter command line (read-only %v)", ro)
 			}
