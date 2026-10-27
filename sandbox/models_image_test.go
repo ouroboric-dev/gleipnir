@@ -2,6 +2,9 @@ package sandbox
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -24,14 +27,14 @@ func TestModelsImageTagFollowsItsFiles(t *testing.T) {
 	if !regexp.MustCompile(`^localhost/ygg-models:[0-9a-f]{12}$`).MatchString(tag) {
 		t.Fatalf("ModelsImage() = %q", tag)
 	}
-	if modelsTag(modelsContainerfile, modelsEntrypoint, modelGateSource) != tag {
+	if modelsTag(modelsContainerfile, modelsEntrypoint, modelGateSource, "") != tag {
 		t.Error("ModelsImage() is not the tag of the embedded files")
 	}
 	for name, other := range map[string]string{
-		"Containerfile": modelsTag(modelsContainerfile+"\n", modelsEntrypoint, modelGateSource),
-		"entrypoint":    modelsTag(modelsContainerfile, modelsEntrypoint+"\n", modelGateSource),
-		"gate":          modelsTag(modelsContainerfile, modelsEntrypoint, modelGateSource+"\n"),
-		"a moved byte":  modelsTag(modelsContainerfile+modelsEntrypoint[:1], modelsEntrypoint[1:], modelGateSource),
+		"Containerfile": modelsTag(modelsContainerfile+"\n", modelsEntrypoint, modelGateSource, ""),
+		"entrypoint":    modelsTag(modelsContainerfile, modelsEntrypoint+"\n", modelGateSource, ""),
+		"gate":          modelsTag(modelsContainerfile, modelsEntrypoint, modelGateSource+"\n", ""),
+		"a moved byte":  modelsTag(modelsContainerfile+modelsEntrypoint[:1], modelsEntrypoint[1:], modelGateSource, ""),
 	} {
 		if other == tag {
 			t.Errorf("a changed %s kept the tag", name)
@@ -112,6 +115,51 @@ func podmanWithContext(t *testing.T, d *Driver) {
 	d.Podman = p
 }
 
+// The default architecture keeps today's formula: the hash of the three files alone.
+func TestModelsImageForDefaultKeepsTheThreeFileHash(t *testing.T) {
+	h := sha256.New()
+	for _, part := range []string{modelsContainerfile, modelsEntrypoint, modelGateSource} {
+		fmt.Fprintf(h, "%d:%s\n", len(part), part)
+	}
+	want := "localhost/ygg-models:" + hex.EncodeToString(h.Sum(nil))[:12]
+	if got := ModelsImage(); got != want {
+		t.Errorf("ModelsImage() = %q, want the three-file hash %q", got, want)
+	}
+	for _, arch := range []string{"", "89"} {
+		got, err := ModelsImageFor(arch)
+		if err != nil || got != want {
+			t.Errorf("ModelsImageFor(%q) = %q, %v; want %q", arch, got, err, want)
+		}
+	}
+}
+
+func TestModelsImageForAnotherArchitectureIsAnotherTag(t *testing.T) {
+	seen := map[string]string{"default": ModelsImage()}
+	for _, arch := range []string{"86", "86;89", "89-real", "90a"} {
+		got, err := ModelsImageFor(arch)
+		if err != nil {
+			t.Fatalf("ModelsImageFor(%q) = %v", arch, err)
+		}
+		for name, tag := range seen {
+			if got == tag {
+				t.Errorf("ModelsImageFor(%q) = %q, the tag of %s", arch, got, name)
+			}
+		}
+		seen[arch] = got
+	}
+}
+
+func TestModelsImageForRefusesWhatBuildModelsRefuses(t *testing.T) {
+	d, _, _ := fakeEngine(t)
+	for _, arch := range []string{"8.6", "89;", "x", " 89"} {
+		_, want := d.BuildModels(context.Background(), arch)
+		_, err := ModelsImageFor(arch)
+		if err == nil || want == nil || err.Error() != want.Error() {
+			t.Errorf("ModelsImageFor(%q) = %v; want the error of BuildModels: %v", arch, err, want)
+		}
+	}
+}
+
 func TestModelsImageBuildPullsTheBasesThenBuildsNeverPulling(t *testing.T) {
 	d, log, _ := fakeEngine(t)
 	podmanWithContext(t, d)
@@ -119,8 +167,12 @@ func TestModelsImageBuildPullsTheBasesThenBuildsNeverPulling(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if tag != ModelsImage() {
-		t.Errorf("BuildModels() = %q, want %q", tag, ModelsImage())
+	want, err := ModelsImageFor("86")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tag != want || tag == ModelsImage() {
+		t.Errorf("BuildModels(86) = %q, want ModelsImageFor(86) = %q, not the default %q", tag, want, ModelsImage())
 	}
 	got := logOf(t, log)
 	for _, base := range modelsBases() {
