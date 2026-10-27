@@ -1,6 +1,8 @@
 package sandbox
 
 import (
+	"fmt"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -25,6 +27,7 @@ func stubs(t *testing.T) (bin, log string) {
   proxy.golang.org) echo "142.250.1.1 STREAM"; echo "142.250.1.2 STREAM" ;;
   postgres) echo "10.89.0.5 STREAM postgres" ;;
   seaweedfs) echo "10.89.0.6 STREAM seaweedfs" ;;
+  lmit-server) echo "10.89.7.2 STREAM lmit-server" ;;
   late) n="$(cat "$STUB_LATE" 2>/dev/null || echo 0)"; echo $((n+1)) > "$STUB_LATE"; [ "$n" -ge 2 ] && echo "10.89.0.7 STREAM late" ;;
   rotating.example.com) n="$(cat "$STUB_ROTATE" 2>/dev/null || echo 0)"; echo $((n+1)) > "$STUB_ROTATE"; echo "10.0.0.$((n+1)) STREAM rotating.example.com" ;;
 esac
@@ -57,8 +60,10 @@ func runEgressWithServices(t *testing.T, hosts, services string, extra ...string
 	os.WriteFile(hostsFile, []byte(hosts), 0o644)
 	resolv := filepath.Join(dir, "resolv.conf")
 	os.WriteFile(resolv, []byte("nameserver 10.89.0.1\n"), 0o644)
+	route := filepath.Join(dir, "route")
+	os.WriteFile(route, []byte(routeTable(t, "eth0 default 10.89.0.1", "eth0 10.89.0.0/24")), 0o644)
 	script := filepath.Join(dir, "egress.sh")
-	os.WriteFile(script, []byte(strings.ReplaceAll(EgressScript, "/etc/resolv.conf", resolv)), 0o755)
+	os.WriteFile(script, []byte(EgressScript), 0o755)
 	state = filepath.Join(dir, "state")
 	args := []string{script, hostsFile}
 	if services != "" {
@@ -68,7 +73,7 @@ func runEgressWithServices(t *testing.T, hosts, services string, extra ...string
 	}
 	cmd := exec.Command("sh", args...)
 	cmd.Env = append([]string{"PATH=" + bin + ":" + os.Getenv("PATH"), "STUB_LOG=" + log, "STUB_LATE=" + filepath.Join(dir, "late"), "STUB_ROTATE=" + filepath.Join(dir, "rotate"),
-		"YGG_FW_STATE=" + state, "YGG_ONCE=1"}, extra...)
+		"YGG_FW_STATE=" + state, "YGG_FW_RESOLV=" + resolv, "YGG_FW_ROUTE=" + route, "YGG_ONCE=1"}, extra...)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		err = &scriptError{err, string(out)}
@@ -228,5 +233,149 @@ func TestEgressAnswersWhatItAllowsAfterARefreshToo(t *testing.T) {
 		if !strings.Contains(calls, want) {
 			t.Errorf("the rules lack %q:\n%s", want, calls)
 		}
+	}
+}
+
+// routeTable writes /proc/net/route's text for routes given as "IFACE default GATEWAY" or "IFACE ADDRESS/PREFIX":
+// the kernel prints each address as the hex of its 32 bits in memory, little-endian on the engine's machines.
+func routeTable(t *testing.T, routes ...string) string {
+	t.Helper()
+	le := func(ip net.IP) string {
+		v := ip.To4()
+		return fmt.Sprintf("%02X%02X%02X%02X", v[3], v[2], v[1], v[0])
+	}
+	var b strings.Builder
+	b.WriteString("Iface\tDestination\tGateway \tFlags\tRefCnt\tUse\tMetric\tMask\t\tMTU\tWindow\tIRTT\t\t\n")
+	for _, r := range routes {
+		f := strings.Fields(r)
+		if f[1] == "default" {
+			fmt.Fprintf(&b, "%s\t00000000\t%s\t0003\t0\t0\t0\t00000000\t0\t0\t0   \n", f[0], le(net.ParseIP(f[2])))
+			continue
+		}
+		_, subnet, err := net.ParseCIDR(f[1])
+		if err != nil {
+			t.Fatal(err)
+		}
+		fmt.Fprintf(&b, "%s\t%s\t00000000\t0001\t0\t0\t0\t%s\t0\t0\t0   \n", f[0], le(subnet.IP), le(net.IP(subnet.Mask)))
+	}
+	return b.String()
+}
+
+// egressFunction returns the definition of the shell function name in egress.sh, so a test can run it alone.
+func egressFunction(t *testing.T, name string) string {
+	t.Helper()
+	start := strings.Index(EgressScript, "\n"+name+"() {\n")
+	if start < 0 {
+		t.Fatalf("egress.sh has no function %s", name)
+	}
+	end := strings.Index(EgressScript[start:], "\n}\n")
+	return EgressScript[start+1 : start+end+3]
+}
+
+// awks returns a folder for each awk the firewall image might hold that this machine has: the one on PATH, and
+// mawk (Debian's default) and busybox's, each linked as awk. The selection is POSIX awk, so all must agree.
+func awks(t *testing.T) map[string]string {
+	t.Helper()
+	dirs := map[string]string{"awk": ""}
+	for _, a := range [][]string{{"mawk"}, {"busybox", "awk"}} {
+		path, err := exec.LookPath(a[0])
+		if err != nil {
+			continue
+		}
+		dir := t.TempDir()
+		body := "#!/bin/sh\nexec " + strings.Join(append([]string{path}, a[1:]...), " ") + " \"$@\"\n"
+		if err := os.WriteFile(filepath.Join(dir, "awk"), []byte(body), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		dirs[strings.Join(a, " ")] = dir
+	}
+	return dirs
+}
+
+func TestEgressPicksTheResolverOfTheDefaultRoutesNetwork(t *testing.T) {
+	lmis := routeTable(t, "eth1 default 10.89.12.1", "eth0 10.89.7.0/24", "eth1 10.89.12.0/24", "eth2 10.89.11.0/24")
+	for _, c := range []struct {
+		name, route, resolv, want, refusal string
+	}{
+		{"an internal network's resolver first", lmis,
+			"search dns.podman dns.podman dns.podman\nnameserver 10.89.7.1\nnameserver 10.89.11.1\nnameserver 10.89.12.1\n", "10.89.12.1", ""},
+		{"the default network's resolver first", lmis, "nameserver 10.89.12.1\nnameserver 10.89.7.1\n", "10.89.12.1", ""},
+		{"one network", routeTable(t, "eth0 default 10.89.0.1", "eth0 10.89.0.0/24"), "nameserver 10.89.0.1\n", "10.89.0.1", ""},
+		{"a wider subnet and an IPv6 resolver", routeTable(t, "eth0 10.89.7.0/24", "eth1 default 10.88.0.1", "eth1 10.88.0.0/16"),
+			"nameserver fd00::1\nnameserver 10.89.7.1\nnameserver 10.88.3.1\n", "10.88.3.1", ""},
+		{"no resolver in the default network", lmis, "nameserver 10.89.7.1\nnameserver 10.89.11.1\n", "", "no nameserver"},
+		{"no default route", routeTable(t, "eth0 10.89.7.0/24"), "nameserver 10.89.7.1\n", "", "no default route"},
+	} {
+		for awk, dir := range awks(t) {
+			t.Run(c.name+" ("+awk+")", func(t *testing.T) {
+				files := t.TempDir()
+				route, resolv := filepath.Join(files, "route"), filepath.Join(files, "resolv.conf")
+				os.WriteFile(route, []byte(c.route), 0o644)
+				os.WriteFile(resolv, []byte(c.resolv), 0o644)
+				cmd := exec.Command("sh", "-c", egressFunction(t, "default_resolver")+`default_resolver "$1" "$2"`, "sh", route, resolv)
+				if dir != "" {
+					cmd.Env = append(os.Environ(), "PATH="+dir+":"+os.Getenv("PATH"))
+				}
+				var stderr strings.Builder
+				cmd.Stderr = &stderr
+				out, err := cmd.Output()
+				got := strings.TrimSpace(string(out))
+				if c.refusal == "" && (err != nil || got != c.want) {
+					t.Errorf("default_resolver = %q, %v (%s); want %s", got, err, stderr.String(), c.want)
+				}
+				if c.refusal != "" && (err == nil || got != "" || !strings.Contains(stderr.String(), c.refusal)) {
+					t.Errorf("default_resolver = %q, %v (%s); want a failure that says %q", got, err, stderr.String(), c.refusal)
+				}
+			})
+		}
+	}
+}
+
+func TestEgressAsksTheDefaultNetworksResolverAloneForEveryName(t *testing.T) {
+	dir := t.TempDir()
+	resolv, route := filepath.Join(dir, "resolv.conf"), filepath.Join(dir, "route")
+	os.WriteFile(resolv, []byte("search dns.podman dns.podman\nnameserver 10.89.5.1\nnameserver 10.89.0.1\noptions edns0\n"), 0o644)
+	os.WriteFile(route, []byte(routeTable(t, "eth0 default 10.89.0.1", "eth0 10.89.0.0/24", "eth1 10.89.5.0/24")), 0o644)
+	calls, state, err := runEgressWithServices(t, "api.anthropic.com\n", "postgres 5432\nlmit-server 8090\n", "YGG_FW_RESOLV="+resolv, "YGG_FW_ROUTE="+route)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"iptables -A OUTPUT -p udp -d 10.89.0.1 --dport 53 -j ACCEPT\n", "iptables -A OUTPUT -p tcp -d 10.89.0.1 --dport 53 -j ACCEPT\n",
+		"conf: server=/postgres/10.89.0.1\n", "conf: server=/lmit-server/10.89.0.1\n",
+	} {
+		if !strings.Contains(calls, want) {
+			t.Errorf("the rules or dnsmasq's configuration lack %q:\n%s", want, calls)
+		}
+	}
+	if strings.Contains(calls, "10.89.5.1") {
+		t.Errorf("the rules or dnsmasq's configuration name the internal network's resolver:\n%s", calls)
+	}
+	// The script's own lookups (getent) read resolv.conf: it names the chosen resolver alone, and keeps the rest.
+	if b, _ := os.ReadFile(resolv); string(b) != "search dns.podman dns.podman\noptions edns0\nnameserver 10.89.0.1\n" {
+		t.Errorf("the firewall's resolv.conf after the start:\n%s\nwant its search and options lines and the default network's resolver alone", b)
+	}
+	if _, err := os.Stat(filepath.Join(state, "ready")); err != nil {
+		t.Error("the firewall never said it was ready")
+	}
+}
+
+func TestEgressRefusesToOpenWithoutTheDefaultNetworksResolver(t *testing.T) {
+	dir := t.TempDir()
+	resolv, route := filepath.Join(dir, "resolv.conf"), filepath.Join(dir, "route")
+	os.WriteFile(resolv, []byte("nameserver 10.89.5.1\n"), 0o644)
+	os.WriteFile(route, []byte(routeTable(t, "eth0 default 10.89.0.1", "eth0 10.89.0.0/24", "eth1 10.89.5.0/24")), 0o644)
+	calls, state, err := runEgress(t, "api.anthropic.com\n", "YGG_FW_RESOLV="+resolv, "YGG_FW_ROUTE="+route)
+	if err == nil || !strings.Contains(err.Error(), "no nameserver") {
+		t.Fatalf("egress.sh with no resolver in the default route's network: %v; want a refusal that says so", err)
+	}
+	if strings.Contains(calls, "iptables") {
+		t.Errorf("the script changed rules before it knew its resolver:\n%s", calls)
+	}
+	if b, _ := os.ReadFile(resolv); string(b) != "nameserver 10.89.5.1\n" {
+		t.Errorf("a refused start rewrote resolv.conf:\n%s", b)
+	}
+	if _, err := os.Stat(filepath.Join(state, "ready")); err == nil {
+		t.Error("a refused firewall said it was ready")
 	}
 }

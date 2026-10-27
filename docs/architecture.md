@@ -56,7 +56,9 @@ The harness: agent adapters, the devcontainer sandbox driver, policies and the c
   consumes ask for (a database, object storage), and opens their ports, and only theirs, to the work
   container through the firewall. The firewall also answers the work container's DNS queries itself, from
   the addresses it allows, so a name served from a large pool never resolves to an address the rules do
-  not allow; it resolves nothing but the allowed hosts and the services' names. The services sit on an internal
+  not allow; it resolves nothing but the allowed hosts and the services' names. It asks one resolver for every
+  name, its own lookups and the services' names alike: the one inside the subnet of its default route, whatever
+  internal networks it also joins, and DNS to any other address is dropped. The services sit on an internal
   network with no route out, which the firewall joins, so none of them can reach the internet for a client. A spec
   with `Models` names a shared model server: the firewall alone joins the server's network (`models`, external),
   which `Up` refuses unless `podman network inspect` says it is internal, and opens the server's name on its one
