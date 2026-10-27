@@ -3,6 +3,7 @@ package opencode
 import (
 	"context"
 	"encoding/json"
+	"math"
 	"strings"
 	"testing"
 
@@ -170,5 +171,41 @@ func TestLocalMeetsStrictPrivacyWithTheSameConfig(t *testing.T) {
 	cfg.Privacy = "loose"
 	if _, err := New("local/qwen", cfg); err == nil {
 		t.Error("an unknown privacy was accepted")
+	}
+}
+
+// A price that is not a finite number would make a session's cost NaN or infinite, which gungnir refuses for
+// every session of the role; New refuses it first and names the model and the field.
+func TestAPriceThatIsNotFiniteIsRefusedWithTheModelAndTheField(t *testing.T) {
+	srv := &Local{BaseURL: "http://m:1/v1", Context: 1000, Output: 100}
+	bad := map[string]float64{"NaN": math.NaN(), "+Inf": math.Inf(1), "-Inf": math.Inf(-1)}
+	fields := map[string]func(p *Price, v float64){
+		"input":       func(p *Price, v float64) { p.Input = v },
+		"output":      func(p *Price, v float64) { p.Output = v },
+		"cache read":  func(p *Price, v float64) { p.CacheRead = v },
+		"cache write": func(p *Price, v float64) { p.CacheWrite = v },
+	}
+	for field, set := range fields {
+		for vname, v := range bad {
+			p := &Price{Input: 1, Output: 1}
+			set(p, v)
+			_, err := New("local/qwen", Config{Price: p, Local: srv})
+			if err == nil || !strings.Contains(err.Error(), "local/qwen") || !strings.Contains(err.Error(), field) {
+				t.Errorf("local, %s %s: New() = %v, want an error naming the model and %q", field, vname, err, field)
+			}
+			_, err = New("openrouter/openai/gpt-4o-mini", Config{Price: p})
+			if err == nil || !strings.Contains(err.Error(), "openrouter/openai/gpt-4o-mini") || !strings.Contains(err.Error(), field) {
+				t.Errorf("openrouter, %s %s: New() = %v, want an error naming the model and %q", field, vname, err, field)
+			}
+		}
+	}
+	if _, err := New("local/qwen", Config{Price: &Price{Input: 1, Output: 1, CacheRead: -1}, Local: srv}); err == nil {
+		t.Error("a negative cache price on a local model was accepted")
+	}
+	if _, err := New("openrouter/openai/gpt-4o-mini", Config{Price: &Price{Input: -1}}); err == nil {
+		t.Error("a negative price on an OpenRouter model was accepted")
+	}
+	if _, err := New("openrouter/openai/gpt-4o-mini", Config{Price: &Price{Input: 1, Output: 2, CacheRead: 0.1, CacheWrite: 0}}); err != nil {
+		t.Errorf("a valid price on an OpenRouter model: %v", err)
 	}
 }
