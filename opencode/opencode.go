@@ -13,6 +13,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"path/filepath"
 	"slices"
@@ -125,6 +126,9 @@ func New(model string, cfg Config) (*Agent, error) {
 	if err := CheckReasoning(cfg.Reasoning); err != nil {
 		return nil, err
 	}
+	if err := checkPrice("openrouter/"+id, cfg.Price, false); err != nil {
+		return nil, err
+	}
 	return &Agent{cfg: cfg, model: id}, nil
 }
 
@@ -139,6 +143,9 @@ func newLocal(name string, cfg Config) (*Agent, error) {
 	case cfg.Price == nil || cfg.Price.Input <= 0 || cfg.Price.Output <= 0:
 		return nil, fmt.Errorf("opencode: model local/%s needs a price above 0 for input and output, so the caps can count dollars", name)
 	}
+	if err := checkPrice("local/"+name, cfg.Price, true); err != nil {
+		return nil, err
+	}
 	// A local model sends nothing outside the machine, so it meets privacy: strict with the same configuration.
 	switch cfg.Privacy {
 	case "", "standard", "strict":
@@ -149,6 +156,29 @@ func newLocal(name string, cfg Config) (*Agent, error) {
 		return nil, fmt.Errorf("opencode: a local model sets no reasoning effort: the model list sets it")
 	}
 	return &Agent{cfg: cfg, model: name, local: true}, nil
+}
+
+// checkPrice refuses a price with a field that is NaN, infinite or negative: such a figure makes a session's cost
+// NaN or infinite, and gungnir then refuses every session of the role. A local model's input and output must also be
+// above 0 (the caller checks that a local price exists and says so).
+func checkPrice(model string, p *Price, local bool) error {
+	if p == nil {
+		return nil
+	}
+	for _, f := range []struct {
+		name string
+		v    float64
+		pos  bool
+	}{{"input", p.Input, local}, {"output", p.Output, local}, {"cache read", p.CacheRead, false}, {"cache write", p.CacheWrite, false}} {
+		if math.IsNaN(f.v) || math.IsInf(f.v, 0) || f.v < 0 || (f.pos && f.v == 0) {
+			want := "finite and not negative"
+			if f.pos {
+				want = "finite and above 0"
+			}
+			return fmt.Errorf("opencode: model %s: the %s price is %v, want a number that is %s", model, f.name, f.v, want)
+		}
+	}
+	return nil
 }
 
 func (a *Agent) Name() string { return "opencode" }
